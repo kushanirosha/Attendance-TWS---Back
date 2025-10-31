@@ -1,0 +1,28 @@
+backend/
+├── config/
+│   └── db.js
+├── controllers/
+│   ├── employeeController.js
+│   ├── projectController.js
+│   ├── attendanceController.js
+│   ├── userController.js
+│   └── shiftController.js
+├── middlewares/
+│   └── errorHandler.js
+├── models/
+│   └── data.json
+├── repositories/
+│   └── fileRepository.js
+├── routes/
+│   ├── employeeRoutes.js
+│   ├── projectRoutes.js
+│   ├── attendanceRoutes.js
+│   ├── userRoutes.js
+│   └── shiftRoutes.js
+├── services/
+│   └── employeeService.js
+├── uploads/
+├── .env
+├── package.json
+├── package-lock.json
+└── server.js
