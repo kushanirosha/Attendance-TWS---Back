@@ -1,44 +1,66 @@
+// services/attendanceService.js
 import { supabase } from "../config/db.js";
 
 export async function getAttendanceLogs() {
   const { data, error } = await supabase
     .from("attendance_logs")
-    .select("id, employee_id, employee_name, timestamp, event_type");
+    .select("id, employee_id, employee_name, timestamp, event_type")
+    .order("timestamp", { ascending: false });
 
   if (error) throw new Error(error.message);
+  if (!data) return [];
 
-  // Get latest event per employee
+  // ✅ Get the latest record per employee
   const latestByEmployee = {};
-  data.forEach((rec) => {
+  for (const rec of data) {
     const prev = latestByEmployee[rec.employee_id];
     if (!prev || new Date(rec.timestamp) > new Date(prev.timestamp)) {
       latestByEmployee[rec.employee_id] = rec;
     }
-  });
+  }
 
-  // Determine status (on time, late, half day)
+  // ✅ Function to get shift status
   const getStatus = (checkInTime) => {
-    const shiftStart = new Date();
-    shiftStart.setHours(5, 30, 0, 0); // Morning shift start
-    const lateTime = new Date();
-    lateTime.setHours(5, 45, 0, 0);
-    const halfDay = new Date();
-    halfDay.setHours(9, 0, 0, 0);
+    const time = new Date(checkInTime);
+    const hours = time.getHours();
+    const minutes = time.getMinutes();
+    const totalMinutes = hours * 60 + minutes;
 
-    const checkIn = new Date(checkInTime);
-    if (checkIn <= lateTime) return "On time";
-    if (checkIn <= halfDay) return "Late";
-    return "Half day";
+    // Morning Shift (04:30 AM - 12:29 PM)
+    if (totalMinutes >= 270 && totalMinutes <= 749) {
+      if (totalMinutes <= 330) return "On time"; // 04:30–05:30
+      if (totalMinutes <= 390) return "Late";    // 05:31–06:30
+      return "Half day";                         // 06:31–12:29
+    }
+
+    // Noon Shift (12:30 PM - 08:29 PM)
+    if (totalMinutes >= 750 && totalMinutes <= 1259) {
+      if (totalMinutes <= 810) return "On time"; // 12:30–01:30
+      if (totalMinutes <= 870) return "Late";    // 01:31–02:30
+      return "Half day";                         // 02:31–08:29
+    }
+
+    // Night Shift (08:30 PM - 04:29 AM next day)
+    // Handle time wrap past midnight
+    if (totalMinutes >= 1260 || totalMinutes <= 269) {
+      if (totalMinutes >= 1260 || totalMinutes <= 90) return "On time"; // 08:30–09:30 PM
+      if (totalMinutes <= 150 || (totalMinutes >= 1291 && totalMinutes <= 1290)) return "Late"; // 09:31–10:30 PM
+      return "Half day"; // 10:31 PM–04:29 AM
+    }
+
+    // Outside all ranges
+    return "Unknown shift";
   };
 
+  // ✅ Return both formatted and raw time
   return Object.values(latestByEmployee).map((rec) => ({
     id: rec.employee_id,
     name: rec.employee_name || "N/A",
-    eventType: rec.event_type, // Added event type since we're getting all events
-    timestamp: new Date(rec.timestamp).toLocaleTimeString([], {
+    checkInTime: new Date(rec.timestamp).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     }),
+    timestamp: rec.timestamp,
     status: getStatus(rec.timestamp),
   }));
 }
