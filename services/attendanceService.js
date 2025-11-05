@@ -1,4 +1,3 @@
-// services/attendanceService.js
 import { supabase } from "../config/db.js";
 
 export async function getAttendanceLogs() {
