@@ -1,6 +1,6 @@
 import { supabase } from '../config/db.js';
 
-// Helper to generate a project ID
+// 🧮 Generate project ID like PROJ001, PROJ002
 const generateProjectId = async () => {
   const { data: projects, error } = await supabase.from('projects').select('id');
   if (error) throw new Error(error.message);
@@ -15,60 +15,131 @@ const generateProjectId = async () => {
   return `PROJ${newNumber}`;
 };
 
-// Get all projects
-export const getProjects = async (req, res) => {
-  const { data, error } = await supabase.from('projects').select('*');
-  if (error) return res.status(500).json({ success: false, message: error.message });
-  res.json({ success: true, data });
+// 🧹 Normalize employees to string array
+const normalizeEmployees = (input) => {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input.map(e => (typeof e === 'object' ? String(e.id || e) : String(e)));
+  }
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input);
+      return Array.isArray(parsed)
+        ? parsed.map(e => (typeof e === 'object' ? String(e.id || e) : String(e)))
+        : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 };
 
-// Get project by ID
-export const getProjectById = async (req, res) => {
-  const { id } = req.params;
-  const { data, error } = await supabase.from('projects').select('*').eq('id', id).single();
-  if (error) return res.status(500).json({ success: false, message: error.message });
-  res.json({ success: true, data });
-};
-
-// Add project
+// ✅ Add Project
 export const addProject = async (req, res) => {
   const { name, department, employees } = req.body;
 
-  if (!name || !department) 
+  if (!name || !department)
     return res.status(400).json({ success: false, message: 'Name and department are required' });
 
   try {
     const id = await generateProjectId();
-    const sanitizedEmployees = sanitizeEmployees(employees);
+    const employeeIds = normalizeEmployees(employees);
 
+    console.log('🟢 Adding project with employees:', employeeIds);
+
+    // 🔁 Remove these employees from any existing project
+    if (employeeIds.length > 0) {
+      const { data: allProjects, error: fetchError } = await supabase.from('projects').select('*');
+      if (fetchError) throw fetchError;
+
+      for (const proj of allProjects) {
+        const updated = (proj.employees || []).filter(e => !employeeIds.includes(e));
+        if (updated.length !== (proj.employees || []).length) {
+          await supabase.from('projects').update({ employees: updated }).eq('id', proj.id);
+        }
+      }
+    }
+
+    // ✅ Insert the new project
     const { data, error } = await supabase
       .from('projects')
-      .insert([{ id, name: String(name), department: String(department), employees: sanitizedEmployees }])
+      .insert([{ id, name, department, employees: employeeIds }])
       .select()
       .single();
 
     if (error) throw error;
-    res.json({ success: true, data });
+
+    // ✅ Update employees' project field (save project name)
+    if (employeeIds.length > 0) {
+      const { error: updateError } = await supabase
+        .from('employees')
+        .update({ project: name }) // ✅ store name, not ID
+        .in('id', employeeIds);
+      if (updateError) throw updateError;
+    }
+
+    res.status(201).json({ success: true, data });
   } catch (err) {
-    console.error('Error adding project:', err);
+    console.error('❌ Error adding project:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// Update project
+// ✅ Update project (moves employees automatically)
 export const updateProject = async (req, res) => {
   const { id } = req.params;
 
-  if (!id || typeof id !== 'string') {
-    return res.status(400).json({ success: false, message: 'Invalid project ID' });
-  }
-
   try {
-    const updates = sanitizeUpdates(req.body);
+    const updates = { ...req.body };
+    if (updates.employees) updates.employees = normalizeEmployees(updates.employees);
 
+    const newEmployees = updates.employees || [];
+
+    // 🧮 Get current project info
+    const { data: currentProject, error: currentError } = await supabase
+      .from('projects')
+      .select('name, employees')
+      .eq('id', id)
+      .single();
+
+    if (currentError) throw currentError;
+
+    const oldEmployees = currentProject?.employees || [];
+    const projectName = updates.name || currentProject.name;
+
+    // 🧩 Employees removed and added
+    const removed = oldEmployees.filter(e => !newEmployees.includes(e));
+    const added = newEmployees.filter(e => !oldEmployees.includes(e));
+
+    // 🧹 Remove added employees from any other projects
+    if (added.length > 0) {
+      const { data: allProjects, error: fetchError } = await supabase.from('projects').select('*');
+      if (fetchError) throw fetchError;
+
+      for (const proj of allProjects) {
+        if (proj.id !== id) {
+          const updated = (proj.employees || []).filter(e => !added.includes(e));
+          if (updated.length !== (proj.employees || []).length) {
+            await supabase.from('projects').update({ employees: updated }).eq('id', proj.id);
+          }
+        }
+      }
+    }
+
+    // 🧹 Remove project name from removed employees
+    if (removed.length > 0) {
+      await supabase.from('employees').update({ project: null }).in('id', removed);
+    }
+
+    // 🔁 Assign added employees to this project (store project name)
+    if (added.length > 0) {
+      await supabase.from('employees').update({ project: projectName }).in('id', added);
+    }
+
+    // 💾 Update project record
     const { data, error } = await supabase
       .from('projects')
-      .update(updates)
+      .update({ ...updates, name: projectName })
       .eq('id', id)
       .select()
       .single();
@@ -77,59 +148,52 @@ export const updateProject = async (req, res) => {
 
     res.json({ success: true, data });
   } catch (err) {
-    console.error('Error updating project:', err);
+    console.error('❌ Error updating project:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// Delete project
+// ✅ Delete project
 export const deleteProject = async (req, res) => {
   const { id } = req.params;
-
   try {
-    const { data, error } = await supabase.from('projects').delete().eq('id', id);
+    // 🧹 Clear project name for all employees under this project
+    const { data: project, error: projError } = await supabase
+      .from('projects')
+      .select('name, employees')
+      .eq('id', id)
+      .single();
+
+    if (projError) throw projError;
+
+    if (project?.employees?.length > 0) {
+      await supabase
+        .from('employees')
+        .update({ project: null })
+        .in('id', project.employees);
+    }
+
+    const { error } = await supabase.from('projects').delete().eq('id', id);
     if (error) throw error;
-    res.json({ success: true, data });
+
+    res.json({ success: true });
   } catch (err) {
-    console.error('Error deleting project:', err);
+    console.error('❌ Error deleting project:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// Helper: sanitize employees input to always return a JSON array
-const sanitizeEmployees = (input) => {
-  if (!input) return [];
-
-  // If array, process each item
-  if (Array.isArray(input)) {
-    return input.map(item => {
-      // If it's already an object with "id", leave it
-      if (item && typeof item === 'object' && 'id' in item) return item;
-      // If primitive (string/number), wrap it
-      return { id: String(item) };
-    });
-  }
-
-  // If single object with id, wrap in array
-  if (input && typeof input === 'object' && 'id' in input) return [input];
-
-  // If primitive, wrap in object
-  if (typeof input === 'string' || typeof input === 'number') return [{ id: String(input) }];
-
-  return [];
+// ✅ Get all projects
+export const getProjects = async (req, res) => {
+  const { data, error } = await supabase.from('projects').select('*');
+  if (error) return res.status(500).json({ success: false, message: error.message });
+  res.json({ success: true, data });
 };
 
-
-// Helper: sanitize updates to match column types
-const sanitizeUpdates = (updates) => {
-  const safeUpdates = {};
-
-  if (updates.name !== undefined) safeUpdates.name = String(updates.name);
-  if (updates.department !== undefined) safeUpdates.department = String(updates.department);
-  if (updates.employees !== undefined) safeUpdates.employees = sanitizeEmployees(updates.employees);
-
-  // Never allow updating the ID
-  if (safeUpdates.id) delete safeUpdates.id;
-
-  return safeUpdates;
+// ✅ Get single project
+export const getProjectById = async (req, res) => {
+  const { id } = req.params;
+  const { data, error } = await supabase.from('projects').select('*').eq('id', id).single();
+  if (error) return res.status(500).json({ success: false, message: error.message });
+  res.json({ success: true, data });
 };
