@@ -18,38 +18,39 @@ export async function getAttendanceLogs() {
     }
   }
 
-  // ✅ Function to get shift status
-  const getStatus = (checkInTime) => {
-    const time = new Date(checkInTime);
-    const hours = time.getHours();
-    const minutes = time.getMinutes();
-    const totalMinutes = hours * 60 + minutes;
+ // ✅ Function to get shift status
+const getStatus = (checkInTime) => {
+  const time = new Date(checkInTime);
+  const hours = time.getHours();
+  const minutes = time.getMinutes();
+  const totalMinutes = hours * 60 + minutes;
 
-    // Morning Shift (04:30 AM - 12:29 PM)
-    if (totalMinutes >= 270 && totalMinutes <= 749) {
-      if (totalMinutes <= 330) return "On time"; // 04:30–05:30
-      if (totalMinutes <= 390) return "Late";    // 05:31–06:30
-      return "Half day";                         // 06:31–12:29
-    }
+  // Morning Shift (04:30 AM - 12:29 PM)
+  if (totalMinutes >= 270 && totalMinutes <= 749) {
+    if (totalMinutes <= 330) return "On time"; // 04:30–05:30
+    if (totalMinutes <= 450) return "Late";    // 05:31–07:30
+    return "Half day";                         // 07:31–12:29
+  }
 
-    // Noon Shift (12:30 PM - 08:29 PM)
-    if (totalMinutes >= 750 && totalMinutes <= 1259) {
-      if (totalMinutes <= 810) return "On time"; // 12:30–01:30
-      if (totalMinutes <= 870) return "Late";    // 01:31–02:30
-      return "Half day";                         // 02:31–08:29
-    }
+  // Noon Shift (12:30 PM - 08:29 PM)
+  if (totalMinutes >= 750 && totalMinutes <= 1229) {
+    if (totalMinutes <= 810) return "On time"; // 12:30–01:30
+    if (totalMinutes <= 930) return "Late";    // 01:31–03:30
+    return "Half day";                         // 03:31–08:29
+  }
 
-    // Night Shift (08:30 PM - 04:29 AM next day)
-    // Handle time wrap past midnight
-    if (totalMinutes >= 1260 || totalMinutes <= 269) {
-      if (totalMinutes >= 1260 || totalMinutes <= 90) return "On time"; // 08:30–09:30 PM
-      if (totalMinutes <= 150 || (totalMinutes >= 1291 && totalMinutes <= 1290)) return "Late"; // 09:31–10:30 PM
-      return "Half day"; // 10:31 PM–04:29 AM
-    }
+  // Night Shift (08:30 PM - 04:29 AM next day)
+  // Handle time wrap around midnight
+  if (totalMinutes >= 1230 || totalMinutes <= 269) {
+    if (totalMinutes >= 1230 && totalMinutes <= 1290) return "On time"; // 08:30–09:30 PM
+    if ((totalMinutes >= 1291 && totalMinutes <= 1410) || (totalMinutes >= 0 && totalMinutes <= 0)) return "Late"; // 09:31–11:30 PM
+    return "Half day"; // 11:31 PM–04:29 AM
+  }
 
-    // Outside all ranges
-    return "Unknown shift";
-  };
+  // Outside all ranges
+  return "Unknown shift";
+};
+
 
   // ✅ Return both formatted and raw time
   return Object.values(latestByEmployee).map((rec) => ({
