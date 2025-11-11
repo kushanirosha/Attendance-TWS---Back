@@ -1,18 +1,13 @@
 backend/
 ├── config/
 │   └── db.js
+|   └── multer.js
 ├── controllers/
 │   ├── employeeController.js
 │   ├── projectController.js
 │   ├── attendanceController.js
 │   ├── userController.js
 │   └── shiftController.js
-├── middlewares/
-│   └── errorHandler.js
-├── models/
-│   └── data.json
-├── repositories/
-│   └── fileRepository.js
 ├── routes/
 │   ├── employeeRoutes.js
 │   ├── projectRoutes.js
@@ -20,8 +15,9 @@ backend/
 │   ├── userRoutes.js
 │   └── shiftRoutes.js
 ├── services/
-│   └── employeeService.js
+│  
 ├── uploads/
+|     |-employeeRoutes.js
 ├── .env
 ├── package.json
 ├── package-lock.json
