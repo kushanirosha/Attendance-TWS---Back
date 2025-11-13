@@ -21,8 +21,8 @@ const __dirname = path.dirname(__filename);
 // -------------------------------------------------
 // 1. Create upload folders if they don’t exist
 // -------------------------------------------------
-const uploadDir = path.join(__dirname, "../uploads/employees");
-await fs.mkdir(uploadDir, { recursive: true });
+// const uploadDir = path.join(__dirname, "../uploads/employees");
+// await fs.mkdir(uploadDir, { recursive: true });
 
 // -------------------------------------------------
 // 2. Middlewares (order matters!)
