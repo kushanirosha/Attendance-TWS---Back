@@ -2,7 +2,7 @@ import { supabase } from "../config/db.js";
 
 export async function getAttendanceLogs() {
   const { data, error } = await supabase
-    .from("attendance_logs")
+    .from("attendance_logs_check_in")
     .select("id, employee_id, employee_name, timestamp, event_type")
     .order("timestamp", { ascending: false });
 
