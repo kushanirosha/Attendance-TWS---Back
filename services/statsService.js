@@ -1,29 +1,15 @@
 // services/statsService.js
 import { supabase } from "../config/db.js";
+import { getStlActiveNowCount } from "./attendanceStlService.js";   // <-- STL
+import { getAdminActiveNowCount } from "./attendanceAdminService.js"; // <-- ADMIN
 
 /* -------------------------------------------------
    SHIFT CONFIG – early window & time bands (minutes)
    ------------------------------------------------- */
 const SHIFT_CONFIG = {
-  Morning: {
-    early: 4 * 60 + 30,          // 04:30
-    onTimeEnd: 5 * 60 + 30,      // 05:30
-    lateEnd: 7 * 60 + 30,        // 07:30
-    halfDayEnd: 12 * 60 + 29,    // 12:29
-  },
-  Noon: {
-    early: 12 * 60 + 30,         // 12:30
-    onTimeEnd: 13 * 60 + 30,     // 13:30
-    lateEnd: 15 * 60 + 30,       // 15:30
-    halfDayEnd: 20 * 60 + 29,    // 20:29
-  },
-  Night: {
-    early: 20 * 60 + 30,         // 20:30
-    onTimeEnd: 21 * 60 + 30,     // 21:30
-    lateEnd: 23 * 60 + 30,       // 23:30
-    halfDayEnd: 4 * 60 + 29,     // 04:29 (next day)
-    nextDayWrap: true,
-  },
+  Morning: { early: 4 * 60 + 30, onTimeEnd: 5 * 60 + 30, lateEnd: 7 * 60 + 30, halfDayEnd: 12 * 60 + 29 },
+  Noon:    { early: 12 * 60 + 30, onTimeEnd: 13 * 60 + 30, lateEnd: 15 * 60 + 30, halfDayEnd: 20 * 60 + 29 },
+  Night:   { early: 20 * 60 + 30, onTimeEnd: 21 * 60 + 30, lateEnd: 23 * 60 + 30, halfDayEnd: 4 * 60 + 29, nextDayWrap: true },
 };
 
 /* -------------------------------------------------
@@ -46,7 +32,7 @@ const getCurrentShift = () => {
 const getTodayDateString = () => {
   const now = new Date();
   const colombo = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
-  return colombo.toISOString().split("T")[0]; // YYYY-MM-DD
+  return colombo.toISOString().split("T")[0];
 };
 
 const getCurrentMonthYear = () => {
@@ -58,7 +44,7 @@ const getCurrentMonthYear = () => {
 const getTodayDay = () => {
   const now = new Date();
   const colombo = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
-  return colombo.getDate().toString(); // "14"
+  return colombo.getDate().toString();
 };
 
 /* -------------------------------------------------
@@ -83,9 +69,9 @@ export const getDashboardStats = async () => {
   const currentShiftName = getCurrentShift();
   const cfg = SHIFT_CONFIG[currentShiftName];
 
-  const today = getTodayDateString();        // "2025-11-14"
-  const monthYear = getCurrentMonthYear();   // "2025-11"
-  const todayDay = getTodayDay();            // "14"
+  const today = getTodayDateString();
+  const monthYear = getCurrentMonthYear();
+  const todayDay = getTodayDay();
 
   const shiftMap = { A: "Morning", B: "Noon", C: "Night" };
   const currentShiftCode = Object.keys(shiftMap).find(k => shiftMap[k] === currentShiftName);
@@ -95,32 +81,51 @@ export const getDashboardStats = async () => {
     const [
       { data: employees = [] },
       { data: shiftRecords = [] },
-      { data: logs = [] }
+      { data: logs = [] },
+      stlResult,
+      adminResult
     ] = await Promise.all([
       supabase.from("employees").select("id, gender"),
       supabase.from("shift_assignments").select("assignments").eq("month_year", monthYear),
 
-      // FIXED: Correct table + event_type + UTC bounds
+      // Check-in logs for current shift day
       (async () => {
-        const colomboMidnight = new Date(
-          new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" })
-        );
+        const colomboMidnight = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
         colomboMidnight.setHours(0, 0, 0, 0);
-
         const nextDayMidnight = new Date(colomboMidnight);
         nextDayMidnight.setDate(nextDayMidnight.getDate() + 1);
-
-        const startUTC = colomboMidnight.toISOString().slice(0, 19); // "2025-11-14T00:00:00"
-        const endUTC = nextDayMidnight.toISOString().slice(0, 19);   // "2025-11-15T00:00:00"
-
+        const startUTC = colomboMidnight.toISOString().slice(0, 19);
+        const endUTC = nextDayMidnight.toISOString().slice(0, 19);
         return supabase
-          .from("attendance_logs_check_in")        // CORRECT TABLE
+          .from("attendance_logs_check_in")
           .select("employee_id, timestamp")
-          .eq("event_type", "check_in")            // Only first punch
+          .eq("event_type", "check_in")
           .gte("timestamp", startUTC)
           .lt("timestamp", endUTC);
-      })()
+      })(),
+
+      // STL: 48-hour window
+      getStlActiveNowCount().catch(err => {
+        console.warn('STL service failed:', err.message);
+        return { total: 0, male: 0, female: 0 };
+      }),
+
+      // ADMIN: 24-hour window
+      getAdminActiveNowCount().catch(err => {
+        console.warn('ADMIN service failed:', err.message);
+        return { total: 0, male: 0, female: 0 };
+      })
     ]);
+
+    // Extract STL
+    const stlActiveCount = stlResult.total;
+    const stlMale = stlResult.male;
+    const stlFemale = stlResult.female;
+
+    // Extract ADMIN
+    const adminActiveCount = adminResult.total;
+    const adminMale = adminResult.male;
+    const adminFemale = adminResult.female;
 
     const empList = Array.isArray(employees) ? employees : [];
     const shiftList = Array.isArray(shiftRecords) ? shiftRecords : [];
@@ -128,24 +133,20 @@ export const getDashboardStats = async () => {
 
     /* ------------------ 2. FIRST VALID PUNCH (>= 04:30) ------------------ */
     const firstValidPunch = {};
-
     logList.forEach(log => {
       const empId = String(log.employee_id);
       const d = new Date(log.timestamp);
       const minutes = d.getHours() * 60 + d.getMinutes();
       const total = cfg.nextDayWrap && minutes < 300 ? minutes + 1440 : minutes;
-
       if (total < cfg.early || firstValidPunch[empId]) return;
       firstValidPunch[empId] = log;
     });
 
     /* ------------------ 3. CLASSIFY ATTENDANCE ------------------ */
     const onTime = new Set(), late = new Set(), halfDay = new Set(), presentAny = new Set();
-
     Object.entries(firstValidPunch).forEach(([empId, log]) => {
       const status = getAttendanceStatus(log.timestamp, cfg);
       if (!status) return;
-
       presentAny.add(empId);
       if (status === "onTime") onTime.add(empId);
       if (status === "late") late.add(empId);
@@ -155,31 +156,18 @@ export const getDashboardStats = async () => {
     /* ------------------ 4. SHIFT ASSIGNMENTS ------------------ */
     const currentShiftEmployees = new Set();
     const rdToday = new Set();
-
     shiftList.forEach(record => {
       let assignments;
       try {
-        assignments = typeof record.assignments === "string"
-          ? JSON.parse(record.assignments)
-          : record.assignments;
-      } catch (e) {
-        console.warn("Failed to parse assignments", e);
-        return;
-      }
-
+        assignments = typeof record.assignments === "string" ? JSON.parse(record.assignments) : record.assignments;
+      } catch (e) { console.warn("Parse error:", e); return; }
       if (!assignments || typeof assignments !== "object") return;
-
       Object.entries(assignments).forEach(([empId, days]) => {
         const shiftToday = days?.[todayDay];
         if (!shiftToday) return;
-
         const id = String(empId);
-        if (shiftToday === "RD") {
-          rdToday.add(id);
-        } else if (
-          shiftToday === currentShiftCode ||
-          shiftMap[shiftToday] === currentShiftName
-        ) {
+        if (shiftToday === "RD") rdToday.add(id);
+        else if (shiftToday === currentShiftCode || shiftMap[shiftToday] === currentShiftName) {
           currentShiftEmployees.add(id);
         }
       });
@@ -196,21 +184,38 @@ export const getDashboardStats = async () => {
       return { male: males, female: females, total: set.size };
     };
 
+    // TOTAL EMPLOYEES = ALL
     const totalStats = countGender(new Set(empList.map(e => String(e.id))));
-    const presentStats = countGender(presentAny);
-    const onTimeStats = countGender(onTime);
-    const lateStats = countGender(late);
-    const halfDayStats = countGender(halfDay);
-    const absentStats = countGender(
-      new Set([...currentShiftEmployees].filter(id => !presentAny.has(id) && !rdToday.has(id)))
-    );
+
+    // PRESENT = current shift only (regular)
+    const presentInCurrentShift = new Set([...presentAny].filter(id => currentShiftEmployees.has(id)));
+    const presentStats = countGender(presentInCurrentShift);
+
+    // FINAL TOTAL = Regular + STL + Admin
+    const finalPresentTotal = presentStats.total + stlActiveCount + adminActiveCount;
+
+    // MERGE ALL GENDER
+    const finalPresentMale = presentStats.male + stlMale + adminMale;
+    const finalPresentFemale = presentStats.female + stlFemale + adminFemale;
+
+    // ON TIME / LATE / HALF-DAY = regular shift only
+    const onTimeInShift = new Set([...onTime].filter(id => currentShiftEmployees.has(id)));
+    const lateInShift = new Set([...late].filter(id => currentShiftEmployees.has(id)));
+    const halfDayInShift = new Set([...halfDay].filter(id => currentShiftEmployees.has(id)));
+
+    const onTimeStats = countGender(onTimeInShift);
+    const lateStats = countGender(lateInShift);
+    const halfDayStats = countGender(halfDayInShift);
+
+    // ABSENT = current shift - present - RD
+    const absentInShift = new Set([...currentShiftEmployees].filter(id => !presentInCurrentShift.has(id) && !rdToday.has(id)));
+    const absentStats = countGender(absentInShift);
     const rdStats = countGender(rdToday);
 
-    /* ------------------ 6. LATE + HALF-DAY = lateComing ------------------ */
-    const totalLateCount = late.size + halfDay.size;
-    const lateMale = lateStats.male + halfDayStats.male;
-    const lateFemale = lateStats.female + halfDayStats.female;
-
+    /* ------------------ 6. LATE COMING ------------------ */
+    const totalLateCount = lateInShift.size;
+    const lateMale = lateStats.male;
+    const lateFemale = lateStats.female;
     const latePercentage = currentShiftEmployees.size > 0
       ? ((totalLateCount / currentShiftEmployees.size) * 100).toFixed(1) + "%"
       : "0.0%";
@@ -228,13 +233,17 @@ export const getDashboardStats = async () => {
       },
 
       present: {
-        total: presentStats.total,
+        total: finalPresentTotal,
+        stlActive: stlActiveCount,
+        adminActive: adminActiveCount,
+        stlMale, stlFemale,
+        adminMale, adminFemale,
         onTime: onTimeStats.total,
         late: lateStats.total,
         halfDay: halfDayStats.total,
-        male: presentStats.male,
-        female: presentStats.female,
-        format: () => `On Time: ${onTimeStats.total} | Late: ${lateStats.total} | Half: ${halfDayStats.total}`
+        male: finalPresentMale,
+        female: finalPresentFemale,
+        format: () => `Present: ${finalPresentTotal} (M: ${finalPresentMale} | F: ${finalPresentFemale}) | STL: ${stlActiveCount} | Admin: ${adminActiveCount} | On Time: ${onTimeStats.total} | Late: ${lateStats.total} | Half: ${halfDayStats.total}`
       },
 
       absent: {
@@ -262,33 +271,19 @@ export const getDashboardStats = async () => {
 
       _debug: {
         currentShiftEmployees: currentShiftEmployees.size,
-        presentTotal: presentAny.size,
-        onTime: onTime.size,
-        late: late.size,
-        halfDay: halfDay.size,
-        onRD: rdToday.size,
+        presentInCurrentShift: presentInCurrentShift.size,
+        stlActiveCount,
+        adminActiveCount,
+        finalPresentTotal,
+        finalPresentMale,
+        finalPresentFemale,
+        absentInShift: absentInShift.size,
+        rdToday: rdToday.size,
         employeesCount: empList.length,
         logsCount: logList.length,
-        shiftRecordsCount: shiftList.length,
         today,
         todayDay,
-        monthYear,
-        serverTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }),
-
-        // THEMKA 1165 DEBUG
-        themika1165: {
-          inEmployees: empList.some(e => String(e.id) === "1165"),
-          inLogs: logList.some(l => String(l.employee_id) === "1165"),
-          punchTime: logList.find(l => String(l.employee_id) === "1165")?.timestamp || null,
-          inCurrentShift: currentShiftEmployees.has("1165"),
-          inRD: rdToday.has("1165"),
-          firstPunch: firstValidPunch["1165"]
-            ? new Date(firstValidPunch["1165"].timestamp).toLocaleTimeString("en-US", { timeZone: "Asia/Colombo" })
-            : null,
-          status: firstValidPunch["1165"]
-            ? getAttendanceStatus(firstValidPunch["1165"].timestamp, cfg)
-            : null
-        }
+        serverTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" })
       }
     };
 

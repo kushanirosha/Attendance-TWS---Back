@@ -11,6 +11,10 @@ import attendanceRoutes from "./routes/attendanceRoutes.js";
 import projectRoutes from "./routes/projectRoutes.js";
 import shiftAssignmentsRoutes from "./routes/shiftAssignmentsRoutes.js";
 import statsRoutes from "./routes/statsRoutes.js";
+import attendanceStlRoutes from "./routes/attendanceStlRoutes.js";
+import attendanceAdminRoutes from './routes/attendanceAdminRoutes.js';
+import authRoutes from './routes/auth.js';
+import usersRoutes from './routes/users.js';
 
 dotenv.config();
 const app = express();
@@ -27,7 +31,11 @@ const __dirname = path.dirname(__filename);
 // -------------------------------------------------
 // 2. Middlewares (order matters!)
 // -------------------------------------------------
-app.use(cors());
+app.use(cors({
+  origin: 'http://localhost:5173', // Vite default
+  credentials: true,
+}));
+
 app.use(express.json());               // parses JSON bodies
 app.use(morgan("dev"));
 
@@ -42,6 +50,11 @@ app.use("/api/attendance", attendanceRoutes);
 app.use("/api", projectRoutes);
 app.use("/api/shiftAssignments", shiftAssignmentsRoutes);
 app.use("/api/stats", statsRoutes);
+app.use('/api/attendancestl', attendanceStlRoutes);
+app.use('/api/attendanceadmin', attendanceAdminRoutes);
+app.use('/api/users', usersRoutes);
+
+app.use('/api/auth', authRoutes);
 
 // -------------------------------------------------
 // 4. Global error handler (prevents HTML pages)
