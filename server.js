@@ -15,6 +15,7 @@ import attendanceStlRoutes from "./routes/attendanceStlRoutes.js";
 import attendanceAdminRoutes from './routes/attendanceAdminRoutes.js';
 import authRoutes from './routes/auth.js';
 import usersRoutes from './routes/users.js';
+import attendanceLtlRoutes from "./routes/attendanceLtlRoutes.js";
 
 dotenv.config();
 const app = express();
@@ -53,6 +54,7 @@ app.use("/api/stats", statsRoutes);
 app.use('/api/attendancestl', attendanceStlRoutes);
 app.use('/api/attendanceadmin', attendanceAdminRoutes);
 app.use('/api/users', usersRoutes);
+app.use("/api/attendance/ltl", attendanceLtlRoutes);
 
 app.use('/api/auth', authRoutes);
 

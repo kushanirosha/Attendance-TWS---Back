@@ -1,7 +1,8 @@
 // services/statsService.js
 import { supabase } from "../config/db.js";
-import { getStlActiveNowCount } from "./attendanceStlService.js";   // <-- STL
-import { getAdminActiveNowCount } from "./attendanceAdminService.js"; // <-- ADMIN
+import { getStlActiveNowCount } from "./attendanceStlService.js";     // STL
+import { getAdminActiveNowCount } from "./attendanceAdminService.js"; // ADMIN
+import { getLtlActiveNowCount } from "./attendanceLtlService.js";     // LTL (ASS.TL, TL, TTL)
 
 /* -------------------------------------------------
    SHIFT CONFIG – early window & time bands (minutes)
@@ -83,12 +84,13 @@ export const getDashboardStats = async () => {
       { data: shiftRecords = [] },
       { data: logs = [] },
       stlResult,
-      adminResult
+      adminResult,
+      ltlResult
     ] = await Promise.all([
       supabase.from("employees").select("id, gender"),
       supabase.from("shift_assignments").select("assignments").eq("month_year", monthYear),
 
-      // Check-in logs for current shift day
+      // Check-in logs for current shift day (Colombo midnight to midnight)
       (async () => {
         const colomboMidnight = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
         colomboMidnight.setHours(0, 0, 0, 0);
@@ -104,28 +106,37 @@ export const getDashboardStats = async () => {
           .lt("timestamp", endUTC);
       })(),
 
-      // STL: 48-hour window
+      // STL: 48-hour active window
       getStlActiveNowCount().catch(err => {
         console.warn('STL service failed:', err.message);
         return { total: 0, male: 0, female: 0 };
       }),
 
-      // ADMIN: 24-hour window
+      // ADMIN: 24-hour active window
       getAdminActiveNowCount().catch(err => {
         console.warn('ADMIN service failed:', err.message);
+        return { total: 0, male: 0, female: 0 };
+      }),
+
+      // LTL (ASS.TL, TL, TTL): check-in + check-out within 18 hours
+      getLtlActiveNowCount().catch(err => {
+        console.warn('LTL service failed:', err.message);
         return { total: 0, male: 0, female: 0 };
       })
     ]);
 
-    // Extract STL
-    const stlActiveCount = stlResult.total;
-    const stlMale = stlResult.male;
-    const stlFemale = stlResult.female;
+    // Extract counts
+    const stlActiveCount = stlResult.total || 0;
+    const stlMale = stlResult.male || 0;
+    const stlFemale = stlResult.female || 0;
 
-    // Extract ADMIN
-    const adminActiveCount = adminResult.total;
-    const adminMale = adminResult.male;
-    const adminFemale = adminResult.female;
+    const adminActiveCount = adminResult.total || 0;
+    const adminMale = adminResult.male || 0;
+    const adminFemale = adminResult.female || 0;
+
+    const ltlActiveCount = ltlResult.total || 0;
+    const ltlMale = ltlResult.male || 0;
+    const ltlFemale = ltlResult.female || 0;
 
     const empList = Array.isArray(employees) ? employees : [];
     const shiftList = Array.isArray(shiftRecords) ? shiftRecords : [];
@@ -162,6 +173,7 @@ export const getDashboardStats = async () => {
         assignments = typeof record.assignments === "string" ? JSON.parse(record.assignments) : record.assignments;
       } catch (e) { console.warn("Parse error:", e); return; }
       if (!assignments || typeof assignments !== "object") return;
+
       Object.entries(assignments).forEach(([empId, days]) => {
         const shiftToday = days?.[todayDay];
         if (!shiftToday) return;
@@ -184,19 +196,19 @@ export const getDashboardStats = async () => {
       return { male: males, female: females, total: set.size };
     };
 
-    // TOTAL EMPLOYEES = ALL
+    // TOTAL EMPLOYEES
     const totalStats = countGender(new Set(empList.map(e => String(e.id))));
 
-    // PRESENT = current shift only (regular)
+    // PRESENT = current shift only (regular employees)
     const presentInCurrentShift = new Set([...presentAny].filter(id => currentShiftEmployees.has(id)));
     const presentStats = countGender(presentInCurrentShift);
 
-    // FINAL TOTAL = Regular + STL + Admin
-    const finalPresentTotal = presentStats.total + stlActiveCount + adminActiveCount;
+    // FINAL TOTAL = Regular + STL + Admin + LTL
+    const finalPresentTotal = presentStats.total + stlActiveCount + adminActiveCount + ltlActiveCount;
 
-    // MERGE ALL GENDER
-    const finalPresentMale = presentStats.male + stlMale + adminMale;
-    const finalPresentFemale = presentStats.female + stlFemale + adminFemale;
+    // FINAL GENDER BREAKDOWN
+    const finalPresentMale = presentStats.male + stlMale + adminMale + ltlMale;
+    const finalPresentFemale = presentStats.female + stlFemale + adminFemale + ltlFemale;
 
     // ON TIME / LATE / HALF-DAY = regular shift only
     const onTimeInShift = new Set([...onTime].filter(id => currentShiftEmployees.has(id)));
@@ -214,8 +226,6 @@ export const getDashboardStats = async () => {
 
     /* ------------------ 6. LATE COMING ------------------ */
     const totalLateCount = lateInShift.size;
-    const lateMale = lateStats.male;
-    const lateFemale = lateStats.female;
     const latePercentage = currentShiftEmployees.size > 0
       ? ((totalLateCount / currentShiftEmployees.size) * 100).toFixed(1) + "%"
       : "0.0%";
@@ -234,16 +244,21 @@ export const getDashboardStats = async () => {
 
       present: {
         total: finalPresentTotal,
+        regular: presentStats.total,
         stlActive: stlActiveCount,
         adminActive: adminActiveCount,
+        ltlActive: ltlActiveCount,                    // New: ASS.TL / TL / TTL
         stlMale, stlFemale,
         adminMale, adminFemale,
+        ltlMale, ltlFemale,
         onTime: onTimeStats.total,
         late: lateStats.total,
         halfDay: halfDayStats.total,
         male: finalPresentMale,
         female: finalPresentFemale,
-        format: () => `Present: ${finalPresentTotal} (M: ${finalPresentMale} | F: ${finalPresentFemale}) | STL: ${stlActiveCount} | Admin: ${adminActiveCount} | On Time: ${onTimeStats.total} | Late: ${lateStats.total} | Half: ${halfDayStats.total}`
+        format: () => `Present: ${finalPresentTotal} (M: ${finalPresentMale} | F: ${finalPresentFemale}) ` +
+          `| STL: ${stlActiveCount} | Admin: ${adminActiveCount} | LTL: ${ltlActiveCount} ` +
+          `| On Time: ${onTimeStats.total} | Late: ${lateStats.total} | Half: ${halfDayStats.total}`
       },
 
       absent: {
@@ -262,11 +277,11 @@ export const getDashboardStats = async () => {
       },
 
       lateComing: {
-        male: lateMale,
-        female: lateFemale,
+        male: lateStats.male,
+        female: lateStats.female,
         total: totalLateCount,
         percentage: latePercentage,
-        format: () => `M: ${lateMale} | F: ${lateFemale} • ${totalLateCount} Late (${latePercentage})`
+        format: () => `M: ${lateStats.male} | F: ${lateStats.female} • ${totalLateCount} Late (${latePercentage})`
       },
 
       _debug: {
@@ -274,6 +289,7 @@ export const getDashboardStats = async () => {
         presentInCurrentShift: presentInCurrentShift.size,
         stlActiveCount,
         adminActiveCount,
+        ltlActiveCount,
         finalPresentTotal,
         finalPresentMale,
         finalPresentFemale,
