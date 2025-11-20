@@ -60,38 +60,38 @@ export async function getAttendanceLogs() {
     if (shift === "B") {
       if (minutes <= 570) return "On time";      // ≤09:30
       if (minutes <= 749) return "Late";         // ≤12:29
-      if (minutes <= 810) return "On time";      // 12:30–01:30
-      if (minutes <= 930) return "Late";         // 01:31–03:30
-      return "Half day";                         // 03:31–08:29
+      if (minutes <= 810) return "On time";      // 12:30–13:30
+      if (minutes <= 930) return "Late";         // 13:31–15:30
+      return "Half day";                         // >15:30
     }
     if (shift === "C") {
-      if (minutes < 1050) return "On time";      // before 05:30 PM
-      if (minutes <= 1229) return "Late";        // 05:31–08:29 PM
-      if (minutes <= 1290) return "On time";     // 08:30–09:30 PM
-      if (minutes <= 1410) return "Late";        // 09:31–11:30 PM
-      return "Half day";                         // 11:31 PM – 04:29 AM
+      if (minutes < 1050) return "On time";      // before 17:30
+      if (minutes <= 1229) return "Late";        // 17:31–20:29
+      if (minutes <= 1290) return "On time";     // 20:30–21:30
+      if (minutes <= 1410) return "Late";        // 21:31–23:30
+      return "Half day";
     }
-    return minutes <= 570 ? "On time" :  "Late"; // no shift
+    return minutes <= 570 ? "On time" : "Late";
   };
 
-  // 5. REGULAR EMPLOYEES – Full original shift rules
+  // 5. REGULAR EMPLOYEES
   const getRegularStatus = (minutes, shift) => {
     if (shift === "A") {
-      if (minutes <= 330) return "On time";      // ≤05:30
-      if (minutes <= 450) return "Late";         // ≤07:30
+      if (minutes <= 330) return "On time";
+      if (minutes <= 450) return "Late";
       return "Half day";
     }
     if (shift === "B") {
-      if (minutes <= 810) return "On time";      // 12:30 – 01:30 PM
-      if (minutes <= 930) return "Late";         // 01:31 – 03:30 PM
-      return "Half day";                         // after 03:30 PM
+      if (minutes <= 810) return "On time";      // 12:30 – 13:30
+      if (minutes <= 930) return "Late";
+      return "Half day";
     }
     if (shift === "C") {
-      if (minutes >= 1230 && minutes <= 1290) return "On time"; // 08:30–09:30 PM
+      if (minutes >= 1230 && minutes <= 1290) return "On time"; // 20:30–21:30
       if ((minutes >= 1291 && minutes <= 1410) || minutes <= 269) return "Late";
       return "Half day";
     }
-    return "On time"; // no shift assigned
+    return "On time";
   };
 
   // 6. MAIN STATUS DECIDER
@@ -106,19 +106,24 @@ export async function getAttendanceLogs() {
       return getTLStatus(minutes, shift);
     }
 
-    // All other employees (regular workers)
     return getRegularStatus(minutes, shift);
   };
 
-  // 7. Final output
-  return Object.values(latestCheckIn).map(log => ({
-    id: log.employee_id,
-    name: log.employee_name || "Unknown",
-    checkInTime: new Date(log.timestamp).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
-    timestamp: log.timestamp,
-    status: getStatus(log.timestamp, log.employee_id),
-  }));
+  // 7. Final output — NOW INCLUDES PROJECT NAME
+  return Object.values(latestCheckIn).map(log => {
+    const empId = log.employee_id;
+    const project = projectMap[empId] || "UNKNOWN";
+
+    return {
+      id: empId,
+      name: log.employee_name || "Unknown",
+      project: project,  // ← This is the new field sent to frontend
+      checkInTime: new Date(log.timestamp).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      timestamp: log.timestamp,
+      status: getStatus(log.timestamp, empId),
+    };
+  });
 }
