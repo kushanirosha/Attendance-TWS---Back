@@ -3,14 +3,15 @@ import { supabase } from "../config/db.js";
 import { getStlActiveNowCount } from "./attendanceStlService.js";     // STL
 import { getAdminActiveNowCount } from "./attendanceAdminService.js"; // ADMIN
 import { getLtlActiveNowCount } from "./attendanceLtlService.js";     // LTL (ASS.TL, TL, TTL)
+import { CLIENT_RENEG_LIMIT } from "tls";
 
 /* -------------------------------------------------
    SHIFT CONFIG – early window & time bands (minutes)
    ------------------------------------------------- */
 const SHIFT_CONFIG = {
   Morning: { early: 4 * 60 + 30, onTimeEnd: 5 * 60 + 30, lateEnd: 7 * 60 + 30, halfDayEnd: 12 * 60 + 29 },
-  Noon:    { early: 12 * 60 + 30, onTimeEnd: 13 * 60 + 30, lateEnd: 15 * 60 + 30, halfDayEnd: 20 * 60 + 29 },
-  Night:   { early: 20 * 60 + 30, onTimeEnd: 21 * 60 + 30, lateEnd: 23 * 60 + 30, halfDayEnd: 4 * 60 + 29, nextDayWrap: true },
+  Noon: { early: 12 * 60 + 30, onTimeEnd: 13 * 60 + 30, lateEnd: 15 * 60 + 30, halfDayEnd: 20 * 60 + 29 },
+  Night: { early: 20 * 60 + 30, onTimeEnd: 21 * 60 + 30, lateEnd: 23 * 60 + 30, halfDayEnd: 4 * 60 + 29, nextDayWrap: true },
 };
 
 /* -------------------------------------------------
@@ -203,8 +204,34 @@ export const getDashboardStats = async () => {
     const presentInCurrentShift = new Set([...presentAny].filter(id => currentShiftEmployees.has(id)));
     const presentStats = countGender(presentInCurrentShift);
 
+    console.log("Present Employee IDs (Regular Shift):", [...presentInCurrentShift]);
+
     // FINAL TOTAL = Regular + STL + Admin + LTL
     const finalPresentTotal = presentStats.total + stlActiveCount + adminActiveCount + ltlActiveCount;
+
+    // COLLECT ALL PRESENT EMPLOYEE IDs
+    const allPresentEmployeeIds = [
+      // 1. Regular shift present
+      ...presentInCurrentShift,
+
+      // 2. STL active now
+      ...(stlResult.activeEmployeeIds || []),
+
+      // 3. Admin active now
+      ...(adminResult.activeEmployeeIds || []),
+
+      // 4. LTL active now (ASS.TL, TL, TTL)
+      ...(ltlResult.activeEmployeeIds || [])
+    ];
+
+    // PRINT THEM BEAUTIFULLY
+    console.log(`\nPresent Employees (${allPresentEmployeeIds.length}):`);
+    console.log("→ Regular Shift :", [...presentInCurrentShift].sort((a, b) => a - b).join(", "));
+    console.log("→ STL Active    :", (stlResult.activeEmployeeIds || []).sort((a, b) => a - b).join(", ") || "none");
+    console.log("→ Admin Active  :", (adminResult.activeEmployeeIds || []).sort((a, b) => a - b).join(", ") || "none");
+    console.log("→ LTL Active    :", (ltlResult.activeEmployeeIds || []).sort((a, b) => a - b).join(", ") || "none");
+    console.log("All Present IDs :", allPresentEmployeeIds.sort((a, b) => a - b).join(", "));
+    console.log(`Total Present   : ${finalPresentTotal}\n`);
 
     // FINAL GENDER BREAKDOWN
     const finalPresentMale = presentStats.male + stlMale + adminMale + ltlMale;
@@ -223,6 +250,8 @@ export const getDashboardStats = async () => {
     const absentInShift = new Set([...currentShiftEmployees].filter(id => !presentInCurrentShift.has(id) && !rdToday.has(id)));
     const absentStats = countGender(absentInShift);
     const rdStats = countGender(rdToday);
+
+    console.log("Absent employee IDs:", [...absentInShift]);
 
     /* ------------------ 6. LATE COMING ------------------ */
     const totalLateCount = lateInShift.size;
