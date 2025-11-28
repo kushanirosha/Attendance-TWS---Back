@@ -14,7 +14,7 @@ export async function getAttendanceLogs() {
   const dayOfMonth = today.getDate();
   const monthYear = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
 
-  // 1. Load shift assignments from ALL projects
+  // 1. Load today's shift assignments (only for regular employees)
   const { data: shiftRows } = await supabase
     .from("shift_assignments")
     .select("assignments")
@@ -29,28 +29,47 @@ export async function getAttendanceLogs() {
     });
   });
 
-  // 2. Load employee project
+  // 2. Get all unique employee IDs from logs
   const employeeIds = [...new Set(logs.map(l => l.employee_id))];
-  const { data: employees } = await supabase
-    .from("employees")
-    .select("id, project")
-    .in("id", employeeIds);
 
-  const projectMap = {};
-  employees?.forEach(e => {
-    projectMap[e.id] = (e.project || "").toString().trim().toUpperCase();
+  // 3. Fetch data from BOTH tables in parallel
+  const [
+    { data: regularEmployees },
+    { data: cleaningStaff }
+  ] = await Promise.all([
+    supabase.from("employees").select("id, name, project").in("id", employeeIds),
+    supabase.from("cleaning_staff").select("id, name, project").in("id", employeeIds)
+  ]);
+
+  // Master maps
+  const nameMap = {};           // id → correct name
+  const projectMap = {};        // id → project (uppercase)
+  const isCleaningStaff = new Set();
+  const isSpecialExempt = new Set(["1007"]); // Always N/A
+
+  // Regular employees
+  regularEmployees?.forEach(emp => {
+    nameMap[emp.id] = emp.name || "Unknown";
+    projectMap[emp.id] = (emp.project || "").toString().trim().toUpperCase();
   });
 
-  // 3. Latest check-in per employee
+  // Cleaning staff → override name, force project, mark for N/A
+  cleaningStaff?.forEach(staff => {
+    nameMap[staff.id] = staff.name || "Unknown";
+    projectMap[staff.id] = "CLEANING";
+    isCleaningStaff.add(staff.id);
+  });
+
+  // 4. Latest check-in per employee
   const latestCheckIn = {};
   for (const log of logs) {
-    const prev = latestCheckIn[log.employee_id];
-    if (!prev || new Date(log.timestamp) > new Date(prev.timestamp)) {
+    const current = latestCheckIn[log.employee_id];
+    if (!current || new Date(log.timestamp) > new Date(current.timestamp)) {
       latestCheckIn[log.employee_id] = log;
     }
   }
 
-  // 4. TL / ASS.TL / TTL – Special detailed rules
+  // 5. TL / ASS.TL / TTL – Special detailed rules
   const getTLStatus = (minutes, shift) => {
     if (shift === "A") {
       if (minutes <= 330) return "On time";      // ≤05:30
@@ -74,7 +93,7 @@ export async function getAttendanceLogs() {
     return minutes <= 570 ? "On time" : "Late";
   };
 
-  // 5. REGULAR EMPLOYEES
+  // 6. REGULAR EMPLOYEES
   const getRegularStatus = (minutes, shift) => {
     if (shift === "A") {
       if (minutes <= 330) return "On time";
@@ -94,13 +113,18 @@ export async function getAttendanceLogs() {
     return "On time";
   };
 
-  // 6. MAIN STATUS DECIDER
+  // 7. MAIN STATUS DECIDER
   const getStatus = (timestamp, empId) => {
-    const project = projectMap[empId] || "";
-    const shift = todayShiftMap[empId];
-    const minutes = new Date(timestamp).getHours() * 60 + new Date(timestamp).getMinutes();
+    // Always N/A for cleaning staff and special ID 1007
+    if (isCleaningStaff.has(empId) || isSpecialExempt.has(empId)) {
+      return "N/A";
+    }
 
+    const project = projectMap[empId] || "";
     if (project === "ADMIN" || project === "STL") return "N/A";
+
+    const minutes = new Date(timestamp).getHours() * 60 + new Date(timestamp).getMinutes();
+    const shift = todayShiftMap[empId];
 
     if (["TL", "ASS. TL", "TTL"].includes(project)) {
       return getTLStatus(minutes, shift);
@@ -109,15 +133,14 @@ export async function getAttendanceLogs() {
     return getRegularStatus(minutes, shift);
   };
 
-  // 7. Final output — NOW INCLUDES PROJECT NAME
+  // 8. Final output — now with correct names and N/A for cleaning staff + 1007
   return Object.values(latestCheckIn).map(log => {
     const empId = log.employee_id;
-    const project = projectMap[empId] || "UNKNOWN";
 
     return {
       id: empId,
-      name: log.employee_name || "Unknown",
-      project: project,  // ← This is the new field sent to frontend
+      name: nameMap[empId] || log.employee_name || "Unknown",   // Correct name guaranteed
+      project: projectMap[empId] || "UNKNOWN",
       checkInTime: new Date(log.timestamp).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
