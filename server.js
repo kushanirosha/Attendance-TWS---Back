@@ -59,6 +59,25 @@ io.on("connection", (socket) => {
   });
 });
 
+// AUTO REFRESH ALL DASHBOARDS AT SHIFT CHANGE (5:30 AM, 1:30 PM, 9:30 PM)
+setInterval(() => {
+  const now = new Date();
+  const colomboTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
+  const h = colomboTime.getHours();
+  const m = colomboTime.getMinutes();
+  const s = colomboTime.getSeconds();
+
+  if ((h === 5 && m === 30 && s < 10) ||
+    (h === 13 && m === 30 && s < 10) ||
+    (h === 21 && m === 30 && s < 10)) {
+    if (dashboardClients.size > 0) {
+      console.log(`SHIFT CHANGE → Refreshing ${dashboardClients.size} clients`);
+      io.emit("shift-change");
+    }
+  }
+}, 1000);
+
+
 // --------------------- Broadcast Function ---------------------
 async function broadcastLatestData() {
   try {
