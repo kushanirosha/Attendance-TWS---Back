@@ -3,7 +3,7 @@ import { supabase } from "../config/db.js";
 import moment from 'moment-timezone';
 
 /**
- * Returns { total: 2, male: 1, female: 1 } for active admins in last 24h
+ * Returns { total: 2, male: 1, female: 1 } for active admins in last 18h
  */
 export async function getAdminActiveNowCount(tz = 'Asia/Colombo') {
   try {
@@ -29,10 +29,10 @@ export async function getAdminActiveNowCount(tz = 'Asia/Colombo') {
     console.log('ADMIN Employees:', adminIds);
 
     // ---------------------------------------------------------------
-    // 2. 24-hour window (UTC)
+    // 2. 12-hour window (UTC)
     // ---------------------------------------------------------------
     const now = moment().utc();
-    const windowStart = now.clone().subtract(24, 'hours').toISOString();
+    const windowStart = now.clone().subtract(18, 'hours').toISOString();
     const windowEnd = now.toISOString();
 
     // ---------------------------------------------------------------

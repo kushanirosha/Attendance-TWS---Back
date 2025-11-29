@@ -196,7 +196,8 @@ export const getDashboardStats = async () => {
     /* ------------------ OTHER STATS: INCLUDE EVERYONE ------------------ */
     const allPresentInShift = new Set([...presentAny].filter(id => currentShiftEmployees.has(id)));
     const absentInShift = new Set([...currentShiftEmployees]
-      .filter(id => !allPresentInShift.has(id) && !rdToday.has(id)));
+      .filter(id => !allPresentInShift.has(id) && !rdToday.has(id))
+      .filter(id => id !== "1007"));
 
     const onTimeInShift = new Set([...onTime].filter(id => currentShiftEmployees.has(id)));
     const lateInShift = new Set([...late].filter(id => currentShiftEmployees.has(id)));
