@@ -32,7 +32,7 @@ const __dirname = path.dirname(__filename);
 const httpServer = createServer(app);                     // ← Wrap Express
 const io = new Server(httpServer, {                       // ← Socket.IO
   cors: {
-    origin: ["http://localhost:5173", "https://yourdomain.com"],
+    origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
     credentials: true
   }
 });
@@ -130,7 +130,7 @@ setTimeout(broadcastLatestData, 2000);
 
 // --------------------- Middlewares ---------------------
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
   credentials: true,
 }));
 
