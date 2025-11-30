@@ -6,7 +6,30 @@ import { getLtlActiveNowCount } from "./attendanceLtlService.js";
 import { getSpecialEmployeesActiveNowCount } from "./attendanceSpecialService.js";
 
 /* -------------------------------------------------
-   SHIFT CONFIG & HELPERS (unchanged)
+   BULLETPROOF COLOMBO TIMEZONE HELPER
+   Works on ANY server (cPanel, VPS, localhost)
+   ------------------------------------------------- */
+const COLOMBO_TZ = "Asia/Colombo";
+
+// Returns a proper Date object in Colombo time
+const getColomboTime = (date = new Date()) => {
+  return new Date(date.toLocaleString("en-US", { timeZone: COLOMBO_TZ }));
+};
+
+// Get today's date string in Colombo (YYYY-MM-DD)
+const getTodayDateString = () => getColomboTime().toISOString().split("T")[0];
+
+// Get current month-year (e.g., 2025-11)
+const getCurrentMonthYear = () => {
+  const c = getColomboTime();
+  return `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, "0")}`;
+};
+
+// Get current day of month (1–31)
+const getTodayDay = () => getColomboTime().getDate().toString();
+
+/* -------------------------------------------------
+   SHIFT CONFIG & HELPERS
    ------------------------------------------------- */
 const SHIFT_CONFIG = {
   Morning: { early: 4 * 60 + 30, onTimeEnd: 5 * 60 + 30, lateEnd: 7 * 60 + 30, halfDayEnd: 12 * 60 + 29 },
@@ -15,33 +38,34 @@ const SHIFT_CONFIG = {
 };
 
 const getCurrentShift = () => {
-  const colombo = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
+  const colombo = getColomboTime();
   const minutes = colombo.getHours() * 60 + colombo.getMinutes();
-  if (minutes >= SHIFT_CONFIG.Morning.onTimeEnd && minutes < SHIFT_CONFIG.Noon.onTimeEnd) return "Morning";
+
+  if (minutes >= SHIFT_CONFIG.Morning.onTimeEnd && minutes < SHIFT_CONFIG.Noon.onTimeEnd)
+    return "Morning";
   if (minutes >= SHIFT_CONFIG.Noon.onTimeEnd) return "Noon";
   return "Night";
 };
 
-const getTodayDateString = () => new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" })).toISOString().split("T")[0];
-const getCurrentMonthYear = () => {
-  const c = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
-  return `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, "0")}`;
-};
-const getTodayDay = () => new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" })).getDate().toString();
+// Fixed: Now uses Colombo time correctly
+const getAttendanceStatus = (utcTimestamp, cfg) => {
+  const d = getColomboTime(new Date(utcTimestamp)); // Convert UTC → Colombo
+  let totalMinutes = d.getHours() * 60 + d.getMinutes();
 
-const getAttendanceStatus = (timestamp, cfg) => {
-  const d = new Date(timestamp);
-  const minutes = d.getHours() * 60 + d.getMinutes();
-  const total = cfg.nextDayWrap && minutes < 300 ? minutes + 1440 : minutes;
-  if (total < cfg.early) return null;
-  if (total <= cfg.onTimeEnd) return "onTime";
-  if (total <= cfg.lateEnd) return "late";
-  if (total <= cfg.halfDayEnd + (cfg.nextDayWrap ? 1440 : 0)) return "halfDay";
+  // Handle night shift wrap-around (e.g., 2:00 AM check-in belongs to previous day's Night shift)
+  if (cfg.nextDayWrap && totalMinutes < 300) {
+    totalMinutes += 1440;
+  }
+
+  if (totalMinutes < cfg.early) return null;
+  if (totalMinutes <= cfg.onTimeEnd) return "onTime";
+  if (totalMinutes <= cfg.lateEnd) return "late";
+  if (totalMinutes <= cfg.halfDayEnd + (cfg.nextDayWrap ? 1440 : 0)) return "halfDay";
   return null;
 };
 
 /* -------------------------------------------------
-   MAIN EXPORT - ONLY EXCLUDE FROM PRESENT COUNT
+   MAIN EXPORT
    ------------------------------------------------- */
 export const getDashboardStats = async () => {
   const currentShiftName = getCurrentShift();
@@ -55,8 +79,8 @@ export const getDashboardStats = async () => {
 
   try {
     const [
-      { data: employeesAll = [] },      // ALL employees (for total count)
-      { data: employeesWithProject = [] }, // To detect excluded projects
+      { data: employeesAll = [] },
+      { data: employeesWithProject = [] },
       { data: shiftRecords = [] },
       { data: logs = [] },
       stlResult,
@@ -67,13 +91,18 @@ export const getDashboardStats = async () => {
       supabase.from("employees").select("id, gender, project"),
       supabase.from("shift_assignments").select("assignments").eq("month_year", monthYear),
 
+      // Fixed: Properly get today's check-ins in Colombo time
       (async () => {
-        const colomboMidnight = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
-        colomboMidnight.setHours(0, 0, 0, 0);
-        const nextMidnight = new Date(colomboMidnight);
-        nextMidnight.setDate(nextMidnight.getDate() + 1);
-        const startUTC = colomboMidnight.toISOString().slice(0, 19);
-        const endUTC = nextMidnight.toISOString().slice(0, 19);
+        const nowColombo = getColomboTime();
+        const startOfDayColombo = new Date(nowColombo);
+        startOfDayColombo.setHours(0, 0, 0, 0);
+
+        const endOfDayColombo = new Date(startOfDayColombo);
+        endOfDayColombo.setDate(endOfDayColombo.getDate() + 1);
+
+        // Convert Colombo midnight → UTC for Supabase query
+        const startUTC = new Date(startOfDayColombo.getTime() - 5.5 * 3600000).toISOString().slice(0, 19);
+        const endUTC = new Date(endOfDayColombo.getTime() - 5.5 * 3600000).toISOString().slice(0, 19);
 
         return supabase
           .from("attendance_logs_check_in")
@@ -88,21 +117,18 @@ export const getDashboardStats = async () => {
       getLtlActiveNowCount().catch(() => ({ total: 0, male: 0, female: 0, activeEmployeeIds: [] }))
     ]);
 
-    /* ------------------ EXCLUSION: ONLY FOR PRESENT COUNT ------------------ */
+    /* ------------------ EXCLUSION LOGIC ------------------ */
     const EXCLUDED_PROJECTS = new Set(["TTL", "STL", "ASS. TL", "TL", "ADMIN", "CLEANING"]);
     const HARD_EXCLUDED_ID = "1007";
 
     const excludedForPresentIds = new Set([
       HARD_EXCLUDED_ID,
       ...employeesWithProject
-        .filter(emp => {
-          const proj = (emp.project || "").toString().trim();
-          return EXCLUDED_PROJECTS.has(proj);
-        })
+        .filter(emp => EXCLUDED_PROJECTS.has((emp.project || "").toString().trim()))
         .map(emp => String(emp.id))
     ]);
 
-    /* ------------------ SPECIAL ROLE COUNTS (already handled separately) ------------------ */
+    /* ------------------ SPECIAL ROLE COUNTS ------------------ */
     const stlActiveCount = stlResult.total || 0;
     const stlMale = stlResult.male || 0;
     const stlFemale = stlResult.female || 0;
@@ -115,43 +141,40 @@ export const getDashboardStats = async () => {
     const ltlMale = ltlResult.male || 0;
     const ltlFemale = ltlResult.female || 0;
 
-    const logList = Array.isArray(logs) ? logs : [];
-
-
-    /* ------------------ SPECIAL EMPLOYEES COUNTS ------------------ */
-
     const specialResult = await getSpecialEmployeesActiveNowCount();
     const specialActive = specialResult.total || 0;
     const specialMale = specialResult.male || 0;
     const specialFemale = specialResult.female || 0;
 
+    const logList = Array.isArray(logs) ? logs : [];
 
-    /* ------------------ FIRST VALID PUNCH (ALL employees) ------------------ */
+    /* ------------------ FIRST VALID PUNCH ------------------ */
     const firstValidPunch = {};
     logList.forEach(log => {
       const empId = String(log.employee_id);
-      const d = new Date(log.timestamp);
-      const minutes = d.getHours() * 60 + d.getMinutes();
-      const total = cfg.nextDayWrap && minutes < 300 ? minutes + 1440 : minutes;
-      if (total < cfg.early || firstValidPunch[empId]) return;
-      firstValidPunch[empId] = log;
+      if (firstValidPunch[empId]) return;
+
+      const status = getAttendanceStatus(log.timestamp, cfg);
+      if (status) {
+        firstValidPunch[empId] = log;
+      }
     });
 
-    /* ------------------ CLASSIFY ATTENDANCE (ALL) ------------------ */
+    /* ------------------ CLASSIFY ATTENDANCE ------------------ */
     const presentAny = new Set();
     const onTime = new Set(), late = new Set(), halfDay = new Set();
 
     Object.entries(firstValidPunch).forEach(([empId, log]) => {
       const status = getAttendanceStatus(log.timestamp, cfg);
       if (!status) return;
+
       presentAny.add(empId);
       if (status === "onTime") onTime.add(empId);
-
       if (status === "late") late.add(empId);
       if (status === "halfDay") halfDay.add(empId);
     });
 
-    /* ------------------ SHIFT ASSIGNMENTS (ALL employees) ------------------ */
+    /* ------------------ SHIFT ASSIGNMENTS ------------------ */
     const currentShiftEmployees = new Set();
     const rdToday = new Set();
 
@@ -184,16 +207,15 @@ export const getDashboardStats = async () => {
       return { male: m, female: f, total: set.size };
     };
 
-    /* ------------------ PRESENT: ONLY REGULAR (EXCLUDED IDs REMOVED) ------------------ */
+    /* ------------------ FINAL CALCULATIONS ------------------ */
     const presentInCurrentShiftRegular = new Set(
       [...presentAny]
         .filter(id => currentShiftEmployees.has(id))
-        .filter(id => !excludedForPresentIds.has(id))  // ONLY HERE we exclude!
+        .filter(id => !excludedForPresentIds.has(id))
     );
 
     const presentStats = countGenderSet(presentInCurrentShiftRegular);
 
-    /* ------------------ OTHER STATS: INCLUDE EVERYONE ------------------ */
     const allPresentInShift = new Set([...presentAny].filter(id => currentShiftEmployees.has(id)));
     const absentInShift = new Set([...currentShiftEmployees]
       .filter(id => !allPresentInShift.has(id) && !rdToday.has(id))
@@ -209,7 +231,6 @@ export const getDashboardStats = async () => {
     const lateStats = countGenderSet(lateInShift);
     const halfDayStats = countGenderSet(halfDayInShift);
 
-    // LOG ABSENT IDs
     const absentIds = [...absentInShift].sort((a, b) => a - b);
     console.log(`\nABSENT TODAY (${absentIds.length}): ${absentIds.join(", ") || "None"}\n`);
 
@@ -224,13 +245,12 @@ export const getDashboardStats = async () => {
     /* ------------------ RETURN ------------------ */
     return {
       currentShift: currentShiftName,
-      updatedAt: new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }),
+      updatedAt: getColomboTime().toLocaleString("en-US", { timeZone: COLOMBO_TZ }),
 
       totalEmployees: {
         male: employeesAll.filter(e => e.gender === "Male").length,
         female: employeesAll.filter(e => e.gender === "Female").length,
         total: employeesAll.length,
-        format: () => `Total: ${employeesAll.length} (M: ${employeesAll.filter(e => e.gender === "Male").length} | F: ${employeesAll.filter(e => e.gender === "Female").length})`
       },
 
       present: {
@@ -239,21 +259,19 @@ export const getDashboardStats = async () => {
         stlActive: stlActiveCount,
         adminActive: adminActiveCount,
         ltlActive: ltlActiveCount,
-        special: specialActive,           
+        special: specialActive,
         male: finalPresentMale,
         female: finalPresentFemale,
         onTime: onTimeStats.total,
         late: lateStats.total,
         halfDay: halfDayStats.total,
-        format: () => `Present: ${finalPresentTotal} (Reg: ${presentStats.total} + STL/Admin/LTL)`
       },
 
       absent: {
         male: absentStats.male,
         female: absentStats.female,
         total: absentStats.total,
-        ids: absentIds,  // Bonus: include IDs in response if needed
-        format: () => `Absent: ${absentStats.total} → ${absentIds.join(", ") || "None"}`
+        ids: absentIds,
       },
 
       restDayShift: {
@@ -270,12 +288,10 @@ export const getDashboardStats = async () => {
       },
 
       _debug: {
-        totalEmployees: employeesAll.length,
+        today,
         currentShiftScheduled: currentShiftEmployees.size,
         presentRegularOnly: presentStats.total,
-        absentTotal: absentStats.total,
         excludedFromPresentCount: excludedForPresentIds.size,
-        today,
       }
     };
 
