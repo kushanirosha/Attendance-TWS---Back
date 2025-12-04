@@ -1,14 +1,14 @@
 // utils/attendance.js
 import { supabase } from "../config/db.js";
 
-// BULLETPROOF: Get minutes in Sri Lanka time (Asia/Colombo)
+// BULLETPROOF: Get minutes since midnight in Colombo time
 const getColomboMinutes = (timestamp) => {
   const date = new Date(timestamp);
   const colomboStr = date.toLocaleString("en-US", {
     timeZone: "Asia/Colombo",
     hour12: false,
     hour: "numeric",
-    minute: "numeric"
+    minute: "numeric",
   });
   const [h, m] = colomboStr.split(":").map(Number);
   return h * 60 + m;
@@ -23,35 +23,42 @@ export async function getAttendanceLogs() {
   if (logError) throw new Error(logError.message);
   if (!logs || logs.length === 0) return [];
 
-  const today = new Date();
-  const dayOfMonth = today.getDate();
-  const monthYear = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+  // BULLETPROOF DATE — ALWAYS USE SRI LANKA TIME, NEVER SERVER TIME
+  const colomboNow = new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" });
+  const today = new Date(colomboNow);
 
-  // 1. Load today's shift assignments
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const dayOfMonth = today.getDate();
+  const monthYear = `${year}-${month}`;
+
+  // 1. Load today's shift assignments (only from correct Colombo date)
   const { data: shiftRows } = await supabase
     .from("shift_assignments")
     .select("assignments")
     .eq("month_year", monthYear);
 
   const todayShiftMap = {};
-  shiftRows?.forEach(row => {
+
+  shiftRows?.forEach((row) => {
     const assignments = row.assignments || {};
     Object.entries(assignments).forEach(([empId, dates]) => {
       const shift = dates?.[dayOfMonth.toString()];
-      if (shift && shift !== "RD") todayShiftMap[empId] = shift;
+      // ONLY ACCEPT REAL SHIFTS: A, B, C — ignore "HOB", "ATAS", "W5", etc.
+      if (shift === "A" || shift === "B" || shift === "C") {
+        todayShiftMap[empId] = shift;
+      }
+      // "RD" or any garbage → ignored = treated as no shift = "On time"
     });
   });
 
-  // 2. Get all unique employee IDs from logs
-  const employeeIds = [...new Set(logs.map(l => l.employee_id))];
+  // 2. Get unique employee IDs
+  const employeeIds = [...new Set(logs.map((l) => l.employee_id))];
 
-  // 3. Fetch data from BOTH tables in parallel
-  const [
-    { data: regularEmployees },
-    { data: cleaningStaff }
-  ] = await Promise.all([
+  // 3. Fetch employee details
+  const [{ data: regularEmployees }, { data: cleaningStaff }] = await Promise.all([
     supabase.from("employees").select("id, name, project").in("id", employeeIds),
-    supabase.from("cleaning_staff").select("id, name, project").in("id", employeeIds)
+    supabase.from("cleaning_staff").select("id, name, project").in("id", employeeIds),
   ]);
 
   // Master maps
@@ -60,18 +67,18 @@ export async function getAttendanceLogs() {
   const isCleaningStaff = new Set();
   const isSpecialExempt = new Set(["1007"]);
 
-  regularEmployees?.forEach(emp => {
+  regularEmployees?.forEach((emp) => {
     nameMap[emp.id] = emp.name || "Unknown";
     projectMap[emp.id] = (emp.project || "").toString().trim().toUpperCase();
   });
 
-  cleaningStaff?.forEach(staff => {
+  cleaningStaff?.forEach((staff) => {
     nameMap[staff.id] = staff.name || "Unknown";
     projectMap[staff.id] = "CLEANING";
     isCleaningStaff.add(staff.id);
   });
 
-  // 4. Latest check-in per employee
+  // 4. Get latest check-in per employee
   const latestCheckIn = {};
   for (const log of logs) {
     const current = latestCheckIn[log.employee_id];
@@ -80,13 +87,9 @@ export async function getAttendanceLogs() {
     }
   }
 
-  // 5. TL / ASS.TL / TTL – Special detailed rules
+  // 5. TL / ASS.TL / TTL Status
   const getTLStatus = (minutes, shift) => {
-    if (shift === "A") {
-      if (minutes <= 330) return "On time";
-      if (minutes <= 450) return "Late";
-      return "Half day";
-    }
+    if (shift === "A") return minutes <= 330 ? "On time" : minutes <= 450 ? "Late" : "Half day";
     if (shift === "B") {
       if (minutes <= 570) return "On time";
       if (minutes <= 749) return "Late";
@@ -101,50 +104,43 @@ export async function getAttendanceLogs() {
       if (minutes <= 1410) return "Late";
       return "Half day";
     }
-    return minutes <= 570 ? "On time" : "Late";
+    return "On time";
   };
 
-  // 6. REGULAR EMPLOYEES — YOUR ORIGINAL LOGIC (PERFECT)
+  // 6. Regular Employee Status
   const getRegularStatus = (minutes, shift) => {
-    if (shift === "A") {
-      if (minutes <= 330) return "On time";
-      if (minutes <= 450) return "Late";
-      return "Half day";
-    }
-    if (shift === "B") {
-      if (minutes <= 810) return "On time";
-      if (minutes <= 930) return "Late";
-      return "Half day";
-    }
+    if (shift === "A") return minutes <= 330 ? "On time" : minutes <= 450 ? "Late" : "Half day";
+    if (shift === "B") return minutes <= 810 ? "On time" : minutes <= 930 ? "Late" : "Half day";
     if (shift === "C") {
       if (minutes >= 1230 && minutes <= 1290) return "On time";
       if ((minutes >= 1291 && minutes <= 1410) || minutes <= 269) return "Late";
       return "Half day";
     }
-    return "On time"; // ← THIS IS CORRECT — no shift = On time
+    return "On time";
   };
 
-  // 7. MAIN STATUS DECIDER — ONLY TIMEZONE FIXED
+  // 7. MAIN STATUS DECIDER — FINAL SAFETY
   const getStatus = (timestamp, empId) => {
-    if (isCleaningStaff.has(empId) || isSpecialExempt.has(empId)) {
-      return "N/A";
-    }
-
-    const project = projectMap[empId] || "";
-    if (project === "ADMIN" || project === "STL") return "N/A";
+    if (isCleaningStaff.has(empId) || isSpecialExempt.has(empId)) return "N/A";
+    if (["ADMIN", "STL"].includes(projectMap[empId] || "")) return "N/A";
 
     const minutes = getColomboMinutes(timestamp);
-    const shift = todayShiftMap[empId]; // ← NOT || "A" → keeps your original logic!
+    const shift = todayShiftMap[empId];
 
-    if (["TL", "ASS. TL", "TTL"].includes(project)) {
+    // NO VALID SHIFT? → ALWAYS "On time"
+    if (!shift || !["A", "B", "C"].includes(shift)) {
+      return "On time";
+    }
+
+    if (["TL", "ASS. TL", "TTL"].includes(projectMap[empId] || "")) {
       return getTLStatus(minutes, shift);
     }
 
     return getRegularStatus(minutes, shift);
   };
 
-  // 8. Final output
-  return Object.values(latestCheckIn).map(log => {
+  // 8. Final Output
+  return Object.values(latestCheckIn).map((log) => {
     const empId = log.employee_id;
 
     return {
@@ -155,7 +151,7 @@ export async function getAttendanceLogs() {
         timeZone: "Asia/Colombo",
         hour: "numeric",
         minute: "2-digit",
-        hour12: true
+        hour12: true,
       }),
       timestamp: log.timestamp,
       status: getStatus(log.timestamp, empId),

@@ -115,11 +115,13 @@ export async function getStlActiveNowCount(tz = 'Asia/Colombo') {
     let activeCount = 0;
     let maleCount = 0;
     let femaleCount = 0;
+    const activeEmployeeIds = [];
 
     for (const id in latest) {
       const { in: inTs, out: outTs } = latest[id];
       if (inTs && (!outTs || outTs < inTs)) {
         activeCount++;
+        activeEmployeeIds.push(id);
         const gender = genderMap[id];
         if (gender === 'Male') maleCount++;
         else if (gender === 'Female') femaleCount++;
@@ -127,6 +129,7 @@ export async function getStlActiveNowCount(tz = 'Asia/Colombo') {
     }
 
     console.log('STL Active:', { total: activeCount, male: maleCount, female: femaleCount });
+    console.log('Active Employee IDs:', activeEmployeeIds);
     return { total: activeCount, male: maleCount, female: femaleCount };
 
   } catch (err) {
