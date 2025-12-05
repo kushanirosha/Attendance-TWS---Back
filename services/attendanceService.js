@@ -14,6 +14,65 @@ const getColomboMinutes = (timestamp) => {
   return h * 60 + m;
 };
 
+// SHIFT A — Strict single window (05:30 start, grace till 07:30)
+const getShiftAStatus = (minutes) => {
+  if (minutes <= 330) return "On time";     // Before 05:30
+  if (minutes <= 450) return "Late";        // 05:30 – 07:30
+  return "Half day";                        // After 07:30
+};
+
+// SHIFT B & C — DUAL WINDOW RULES (Applies to TL + Regular)
+const getDualWindowStatus = (minutes, assignedShift) => {
+  if (assignedShift === "B") {
+    // B Shift: 09:30 start + 13:30 grace after break
+    if (minutes <= 570) return "On time";      // Before 09:30 → On time
+    if (minutes <= 630) return "Late";         // 09:30 – 10:30 → Late
+    if (minutes <= 810) return "On time";      // 10:30 – 13:30 → On time (after lunch)
+    if (minutes <= 930) return "Late";         // 13:30 – 15:30 → Late
+    return "Half day";                         // After 15:30 → Half day
+  }
+
+  if (assignedShift === "C") {
+    // C Shift: 21:30 start + early arrival from 16:00
+    if (minutes < 1050) return "On time";      // Before 17:30 (including 16:00–17:30 early) → On time
+    if (minutes <= 1110) return "Late";        // 17:30 – 18:30 → Late
+    if (minutes <= 1290) return "On time";     // 18:30 – 21:30 → On time (main window)
+    if (minutes <= 1410) return "Late";        // 21:30 – 23:30 → Late
+    return "Half day";                         // After 23:30 → Half day
+  }
+
+  return "On time";
+};
+
+// MAIN STATUS DECIDER — FINAL VERSION (Assigned shift first!)
+const getStatus = (timestamp, empId, assignedShift) => {
+  // Exempt: Cleaning, Special IDs, Admin, STL
+  if (isCleaningStaff.has(empId) || isSpecialExempt.has(empId)) return "N/A";
+  if (["ADMIN", "STL"].includes(projectMap[empId] || "")) return "N/A";
+
+  const minutes = getColomboMinutes(timestamp);
+
+  // PRIORITY 1: No shift today (OFF, RD, W5, HOB, etc.) → Not penalized
+  if (!assignedShift || !["A", "B", "C"].includes(assignedShift)) {
+    return "On time";
+  }
+
+  // PRIORITY 2: Assigned to Shift A → Strict rules
+  if (assignedShift === "A") {
+    return getShiftAStatus(minutes);
+  }
+
+  // PRIORITY 3: Assigned to Shift B or C → Dual window rules (for ALL employees)
+  if (assignedShift === "B" || assignedShift === "C") {
+    return getDualWindowStatus(minutes, assignedShift);
+  }
+
+  return "On time";
+};
+
+// Global variables (will be populated inside function)
+let isCleaningStaff, isSpecialExempt, nameMap, projectMap, todayShiftMap;
+
 export async function getAttendanceLogs() {
   const { data: logs, error: logError } = await supabase
     .from("attendance_logs_check_in")
@@ -23,7 +82,7 @@ export async function getAttendanceLogs() {
   if (logError) throw new Error(logError.message);
   if (!logs || logs.length === 0) return [];
 
-  // BULLETPROOF DATE — ALWAYS USE SRI LANKA TIME, NEVER SERVER TIME
+  // BULLETPROOF DATE — ALWAYS USE SRI LANKA TIME
   const colomboNow = new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" });
   const today = new Date(colomboNow);
 
@@ -32,23 +91,22 @@ export async function getAttendanceLogs() {
   const dayOfMonth = today.getDate();
   const monthYear = `${year}-${month}`;
 
-  // 1. Load today's shift assignments (only from correct Colombo date)
+  // 1. Load today's shift assignments
   const { data: shiftRows } = await supabase
     .from("shift_assignments")
     .select("assignments")
     .eq("month_year", monthYear);
 
-  const todayShiftMap = {};
+  todayShiftMap = {};
 
   shiftRows?.forEach((row) => {
     const assignments = row.assignments || {};
     Object.entries(assignments).forEach(([empId, dates]) => {
       const shift = dates?.[dayOfMonth.toString()];
-      // ONLY ACCEPT REAL SHIFTS: A, B, C — ignore "HOB", "ATAS", "W5", etc.
       if (shift === "A" || shift === "B" || shift === "C") {
         todayShiftMap[empId] = shift;
       }
-      // "RD" or any garbage → ignored = treated as no shift = "On time"
+      // "RD", "OFF", "W5", "HOB" → ignored = no shift = "On time"
     });
   });
 
@@ -62,10 +120,10 @@ export async function getAttendanceLogs() {
   ]);
 
   // Master maps
-  const nameMap = {};
-  const projectMap = {};
-  const isCleaningStaff = new Set();
-  const isSpecialExempt = new Set(["1007"]);
+  nameMap = {};
+  projectMap = {};
+  isCleaningStaff = new Set();
+  isSpecialExempt = new Set(["1007"]); // Add more exempt IDs here
 
   regularEmployees?.forEach((emp) => {
     nameMap[emp.id] = emp.name || "Unknown";
@@ -87,61 +145,10 @@ export async function getAttendanceLogs() {
     }
   }
 
-  // 5. TL / ASS.TL / TTL Status
-  const getTLStatus = (minutes, shift) => {
-    if (shift === "A") return minutes <= 330 ? "On time" : minutes <= 450 ? "Late" : "Half day";
-    if (shift === "B") {
-      if (minutes <= 570) return "On time";
-      if (minutes <= 749) return "Late";
-      if (minutes <= 810) return "On time";
-      if (minutes <= 930) return "Late";
-      return "Half day";
-    }
-    if (shift === "C") {
-      if (minutes < 1050) return "On time";
-      if (minutes <= 1229) return "Late";
-      if (minutes <= 1290) return "On time";
-      if (minutes <= 1410) return "Late";
-      return "Half day";
-    }
-    return "On time";
-  };
-
-  // 6. Regular Employee Status
-  const getRegularStatus = (minutes, shift) => {
-    if (shift === "A") return minutes <= 330 ? "On time" : minutes <= 450 ? "Late" : "Half day";
-    if (shift === "B") return minutes <= 810 ? "On time" : minutes <= 930 ? "Late" : "Half day";
-    if (shift === "C") {
-      if (minutes >= 1230 && minutes <= 1290) return "On time";
-      if ((minutes >= 1291 && minutes <= 1410) || minutes <= 269) return "Late";
-      return "Half day";
-    }
-    return "On time";
-  };
-
-  // 7. MAIN STATUS DECIDER — FINAL SAFETY
-  const getStatus = (timestamp, empId) => {
-    if (isCleaningStaff.has(empId) || isSpecialExempt.has(empId)) return "N/A";
-    if (["ADMIN", "STL"].includes(projectMap[empId] || "")) return "N/A";
-
-    const minutes = getColomboMinutes(timestamp);
-    const shift = todayShiftMap[empId];
-
-    // NO VALID SHIFT? → ALWAYS "On time"
-    if (!shift || !["A", "B", "C"].includes(shift)) {
-      return "On time";
-    }
-
-    if (["TL", "ASS. TL", "TTL"].includes(projectMap[empId] || "")) {
-      return getTLStatus(minutes, shift);
-    }
-
-    return getRegularStatus(minutes, shift);
-  };
-
-  // 8. Final Output
+  // 5. Final Output — With perfect status logic
   return Object.values(latestCheckIn).map((log) => {
     const empId = log.employee_id;
+    const assignedShift = todayShiftMap[empId]; // ← Assigned shift has top priority
 
     return {
       id: empId,
@@ -154,7 +161,7 @@ export async function getAttendanceLogs() {
         hour12: true,
       }),
       timestamp: log.timestamp,
-      status: getStatus(log.timestamp, empId),
+      status: getStatus(log.timestamp, empId, assignedShift),
     };
   });
 }

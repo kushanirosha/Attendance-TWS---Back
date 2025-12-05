@@ -7,55 +7,52 @@ import { getSpecialEmployeesActiveNowCount } from "./attendanceSpecialService.js
 
 /* -------------------------------------------------
    BULLETPROOF COLOMBO TIMEZONE HELPER
-   Works on ANY server (cPanel, VPS, localhost)
    ------------------------------------------------- */
 const COLOMBO_TZ = "Asia/Colombo";
 
-// Returns a proper Date object in Colombo time
 const getColomboTime = (date = new Date()) => {
   return new Date(date.toLocaleString("en-US", { timeZone: COLOMBO_TZ }));
 };
 
-// Get today's date string in Colombo (YYYY-MM-DD)
-const getTodayDateString = () => getColomboTime().toISOString().split("T")[0];
-
-// Get current month-year (e.g., 2025-11)
-const getCurrentMonthYear = () => {
-  const c = getColomboTime();
-  return `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, "0")}`;
+// Operational "today" starts at 5:30 AM Colombo time
+const getOperationalDate = () => {
+  let c = getColomboTime();
+  if (c.getHours() < 5 || (c.getHours() === 5 && c.getMinutes() < 30)) {
+    c = new Date(c.getTime() - 24 * 60 * 60 * 1000);
+  }
+  return c;
 };
 
-// Get current day of month (1–31)
-const getTodayDay = () => getColomboTime().getDate().toString();
+const getTodayDateString = () => getOperationalDate().toISOString().split("T")[0];
+const getCurrentMonthYear = () => {
+  const d = getOperationalDate();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+const getTodayDay = () => getOperationalDate().getDate().toString();
 
 /* -------------------------------------------------
    SHIFT CONFIG & HELPERS
    ------------------------------------------------- */
 const SHIFT_CONFIG = {
   Morning: { early: 4 * 60 + 30, onTimeEnd: 5 * 60 + 30, lateEnd: 7 * 60 + 30, halfDayEnd: 12 * 60 + 29 },
-  Noon: { early: 12 * 60 + 30, onTimeEnd: 13 * 60 + 30, lateEnd: 15 * 60 + 30, halfDayEnd: 20 * 60 + 29 },
-  Night: { early: 20 * 60 + 30, onTimeEnd: 21 * 60 + 30, lateEnd: 23 * 60 + 30, halfDayEnd: 4 * 60 + 29, nextDayWrap: true },
+  Noon:    { early: 12 * 60 + 30, onTimeEnd: 13 * 60 + 30, lateEnd: 15 * 60 + 30, halfDayEnd: 20 * 60 + 29 },
+  Night:   { early: 8 * 60 + 0,   onTimeEnd: 21 * 60 + 30, lateEnd: 23 * 60 + 30, halfDayEnd: 4 * 60 + 29, nextDayWrap: true },
 };
 
 const getCurrentShift = () => {
   const colombo = getColomboTime();
   const minutes = colombo.getHours() * 60 + colombo.getMinutes();
 
-  if (minutes >= SHIFT_CONFIG.Morning.onTimeEnd && minutes < SHIFT_CONFIG.Noon.onTimeEnd)
-    return "Morning";
+  if (minutes >= SHIFT_CONFIG.Morning.onTimeEnd && minutes < SHIFT_CONFIG.Noon.onTimeEnd) return "Morning";
   if (minutes >= SHIFT_CONFIG.Noon.onTimeEnd) return "Noon";
   return "Night";
 };
 
-// Fixed: Now uses Colombo time correctly
 const getAttendanceStatus = (utcTimestamp, cfg) => {
-  const d = getColomboTime(new Date(utcTimestamp)); // Convert UTC → Colombo
+  const d = getColomboTime(new Date(utcTimestamp));
   let totalMinutes = d.getHours() * 60 + d.getMinutes();
 
-  // Handle night shift wrap-around (e.g., 2:00 AM check-in belongs to previous day's Night shift)
-  if (cfg.nextDayWrap && totalMinutes < 300) {
-    totalMinutes += 1440;
-  }
+  if (cfg.nextDayWrap && totalMinutes < 300) totalMinutes += 1440;
 
   if (totalMinutes < cfg.early) return null;
   if (totalMinutes <= cfg.onTimeEnd) return "onTime";
@@ -65,7 +62,7 @@ const getAttendanceStatus = (utcTimestamp, cfg) => {
 };
 
 /* -------------------------------------------------
-   MAIN EXPORT
+   MAIN EXPORT - FULLY FIXED
    ------------------------------------------------- */
 export const getDashboardStats = async () => {
   const currentShiftName = getCurrentShift();
@@ -91,18 +88,29 @@ export const getDashboardStats = async () => {
       supabase.from("employees").select("id, gender, project"),
       supabase.from("shift_assignments").select("assignments").eq("month_year", monthYear),
 
-      // Fixed: Properly get today's check-ins in Colombo time
+      // FINAL FIX — NIGHT SHIFT LOGS FROM 8:00 AM PREVIOUS DAY
       (async () => {
-        const nowColombo = getColomboTime();
-        const startOfDayColombo = new Date(nowColombo);
-        startOfDayColombo.setHours(0, 0, 0, 0);
+        const now = getColomboTime();
 
-        const endOfDayColombo = new Date(startOfDayColombo);
-        endOfDayColombo.setDate(endOfDayColombo.getDate() + 1);
+        // Operational day: 5:30 AM → 5:30 AM
+        let operationalStart = new Date(now);
+        if (now.getHours() < 5 || (now.getHours() === 5 && now.getMinutes() < 30)) {
+          operationalStart.setDate(operationalStart.getDate() - 1);
+        }
+        operationalStart.setHours(5, 30, 0, 0);
 
-        // Convert Colombo midnight → UTC for Supabase query
-        const startUTC = new Date(startOfDayColombo.getTime() - 5.5 * 3600000).toISOString().slice(0, 19);
-        const endUTC = new Date(endOfDayColombo.getTime() - 5.5 * 3600000).toISOString().slice(0, 19);
+        const operationalEnd = new Date(operationalStart);
+        operationalEnd.setDate(operationalEnd.getDate() + 1);
+
+        let logStart = operationalStart;
+        if (currentShiftName === "Night") {
+          logStart = new Date(operationalStart);
+          logStart.setDate(logStart.getDate() - 1);
+          logStart.setHours(8, 0, 0, 0);  // ← 8:00 AM previous day
+        }
+
+        const startUTC = new Date(logStart.getTime() - 5.5 * 3600000).toISOString().slice(0, 19);
+        const endUTC   = new Date(operationalEnd.getTime() - 5.5 * 3600000).toISOString().slice(0, 19);
 
         return supabase
           .from("attendance_logs_check_in")
@@ -117,34 +125,41 @@ export const getDashboardStats = async () => {
       getLtlActiveNowCount().catch(() => ({ total: 0, male: 0, female: 0, activeEmployeeIds: [] }))
     ]);
 
-    /* ------------------ EXCLUSION LOGIC ------------------ */
-    const EXCLUDED_PROJECTS = new Set(["TTL", "STL", "ASS. TL", "TL", "ADMIN", "CLEANING"]);
-    const HARD_EXCLUDED_ID = "1007";
+    const specialResult = await getSpecialEmployeesActiveNowCount();
+    const specialActiveObj = specialResult || { total: 0, male: 0, female: 0, activeEmployeeIds: [] };
 
+    /* ------------------ EXCLUSIONS & SPECIAL ROLES ------------------ */
+    const EXCLUDED_PROJECTS = new Set(["TTL", "STL", "ASS. TL", "TL", "ADMIN", "CLEANING", "LTL"]);
     const excludedForPresentIds = new Set([
-      HARD_EXCLUDED_ID,
+      "1007",
       ...employeesWithProject
-        .filter(emp => EXCLUDED_PROJECTS.has((emp.project || "").toString().trim()))
+        .filter(emp => emp.project && EXCLUDED_PROJECTS.has(emp.project.trim()))
         .map(emp => String(emp.id))
     ]);
 
-    /* ------------------ SPECIAL ROLE COUNTS ------------------ */
+    // All special employees (active or not) must be excluded from absent list
+    const specialEmployeeIds = new Set([
+      ...(stlResult?.activeEmployeeIds || []),
+      ...(adminResult?.activeEmployeeIds || []),
+      ...(ltlResult?.activeEmployeeIds || []),
+      ...(specialActiveObj?.activeEmployeeIds || []),
+      ...excludedForPresentIds
+    ]);
+
+    /* ------------------ SPECIAL COUNTS ------------------ */
     const stlActiveCount = stlResult.total || 0;
+    const adminActiveCount = adminResult.total || 0;
+    const ltlActiveCount = ltlResult.total || 0;
+    const specialActive = specialActiveObj.total || 0;
+
     const stlMale = stlResult.male || 0;
     const stlFemale = stlResult.female || 0;
-
-    const adminActiveCount = adminResult.total || 0;
     const adminMale = adminResult.male || 0;
     const adminFemale = adminResult.female || 0;
-
-    const ltlActiveCount = ltlResult.total || 0;
     const ltlMale = ltlResult.male || 0;
     const ltlFemale = ltlResult.female || 0;
-
-    const specialResult = await getSpecialEmployeesActiveNowCount();
-    const specialActive = specialResult.total || 0;
-    const specialMale = specialResult.male || 0;
-    const specialFemale = specialResult.female || 0;
+    const specialMale = specialActiveObj.male || 0;
+    const specialFemale = specialActiveObj.female || 0;
 
     const logList = Array.isArray(logs) ? logs : [];
 
@@ -153,21 +168,17 @@ export const getDashboardStats = async () => {
     logList.forEach(log => {
       const empId = String(log.employee_id);
       if (firstValidPunch[empId]) return;
-
       const status = getAttendanceStatus(log.timestamp, cfg);
-      if (status) {
-        firstValidPunch[empId] = log;
-      }
+      if (status) firstValidPunch[empId] = log;
     });
 
     /* ------------------ CLASSIFY ATTENDANCE ------------------ */
     const presentAny = new Set();
     const onTime = new Set(), late = new Set(), halfDay = new Set();
 
-    Object.entries(firstValidPunch).forEach(([empId, log]) => {
-      const status = getAttendanceStatus(log.timestamp, cfg);
+    Object.entries(firstValidPunch).forEach(([empId]) => {
+      const status = getAttendanceStatus(firstValidPunch[empId].timestamp, cfg);
       if (!status) return;
-
       presentAny.add(empId);
       if (status === "onTime") onTime.add(empId);
       if (status === "late") late.add(empId);
@@ -215,11 +226,16 @@ export const getDashboardStats = async () => {
     );
 
     const presentStats = countGenderSet(presentInCurrentShiftRegular);
-
     const allPresentInShift = new Set([...presentAny].filter(id => currentShiftEmployees.has(id)));
-    const absentInShift = new Set([...currentShiftEmployees]
-      .filter(id => !allPresentInShift.has(id) && !rdToday.has(id))
-      .filter(id => id !== "1007"));
+
+    // FIXED: Special employees (LTL/STL/ADMIN) excluded from absent list
+    const absentInShift = new Set(
+      [...currentShiftEmployees]
+        .filter(id => !allPresentInShift.has(id))
+        .filter(id => !rdToday.has(id))
+        .filter(id => !specialEmployeeIds.has(id))  // This removes false absentees
+        .filter(id => id !== "1007")
+    );
 
     const onTimeInShift = new Set([...onTime].filter(id => currentShiftEmployees.has(id)));
     const lateInShift = new Set([...late].filter(id => currentShiftEmployees.has(id)));
@@ -289,9 +305,9 @@ export const getDashboardStats = async () => {
 
       _debug: {
         today,
+        operationalDayStart: getOperationalDate().toLocaleDateString(),
         currentShiftScheduled: currentShiftEmployees.size,
-        presentRegularOnly: presentStats.total,
-        excludedFromPresentCount: excludedForPresentIds.size,
+        logFetchWindow: currentShiftName === "Night" ? "8:30 PM prev day → 5:30 AM today" : "5:30 AM → 5:30 AM",
       }
     };
 
