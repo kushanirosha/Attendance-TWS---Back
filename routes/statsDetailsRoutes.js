@@ -1,162 +1,121 @@
 // routes/statsDetailsRoutes.js
 import express from "express";
 import { supabase } from "../config/db.js";
+import { getActiveNowCount } from "../services/activeNowService.js";
+import { getDashboardStats } from "../services/statsService.js";
 
 const router = express.Router();
 
-/* -------------------------------------------------
-   COLOMBO TIME & YOUR EXACT SHIFT CONFIG
-   ------------------------------------------------- */
-const getColomboTime = (date = new Date()) => {
-  return new Date(date.toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
-};
-
-const SHIFT_CONFIG = {
-  Morning: { early: 4 * 60 + 30, onTimeEnd: 5 * 60 + 30, lateEnd: 7 * 60 + 30, halfDayEnd: 12 * 60 + 29 },
-  Noon:    { early: 12 * 60 + 30, onTimeEnd: 13 * 60 + 30, lateEnd: 15 * 60 + 30, halfDayEnd: 20 * 60 + 29 },
-  Night:   { early: 20 * 60 + 30, onTimeEnd: 21 * 60 + 30, lateEnd: 23 * 60 + 30, halfDayEnd: 4 * 60 + 29, nextDayWrap: true },
-};
-
-const getCurrentShift = () => {
-  const colombo = getColomboTime();
-  const minutes = colombo.getHours() * 60 + colombo.getMinutes();
-
-  if (minutes >= SHIFT_CONFIG.Morning.onTimeEnd && minutes < SHIFT_CONFIG.Noon.onTimeEnd)
-    return "Morning";
-  if (minutes >= SHIFT_CONFIG.Noon.onTimeEnd)
-    return "Noon";
-  return "Night";
-};
-
-const getTodayColomboDateString = () => {
-  return getColomboTime().toISOString().split("T")[0];
-};
-
-/* -------------------------------------------------
-   GET /api/stats-details
-   ------------------------------------------------- */
-router.get("/stats-details", async (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const currentShift = getCurrentShift();
-    const today = getTodayColomboDateString();
+    const mainStats = await getDashboardStats();
+    const activeNow = await getActiveNowCount();
 
-    // 1. Fetch all projects
-    const { data: projects = [], error: projError } = await supabase
-      .from("projects")
-      .select("id, name, department")
-      .order("name");
+    const activeIds = (activeNow.activeEmployeeIds || []).map(String);
 
-    if (projError) throw projError;
-
-    const projectNames = projects
-      .map(p => p.name?.trim())
-      .filter(Boolean);
-
-    const safeProjectNames = projectNames.length > 0
-      ? projectNames
-      : ["Warehouse", "Assembly", "KK8-Warehouse", "KK8-Distribution", "W1W", "HoB"];
-
-    // FIXED LINE → Added parentheses
-    const presentByProject = {};
-    safeProjectNames.forEach((name) => {
-      presentByProject[name] = 0;
-    });
-
-    // 2. Today's check-ins
-    const { data: checkIns = [] } = await supabase
-      .from("attendance_logs_check_in")
-      .select("employee_id")
-      .eq("event_type", "check_in")
-      .gte("timestamp", `${today}T00:00:00+05:30`)
-      .lt("timestamp", `${today}T23:59:59+05:30`);
-
-    const checkedInIds = new Set(checkIns.map(log => String(log.employee_id)));
-
-    // 3. Count present + gender
-    let maleCount = 0;
-    let femaleCount = 0;
-
-    if (checkedInIds.size > 0) {
-      const { data: presentEmps = [] } = await supabase
-        .from("employees")
-        .select("id, project, gender")
-        .in("id", Array.from(checkedInIds));
-
-      presentEmps.forEach(emp => {
-        const projName = (emp.project || "").trim();
-        if (presentByProject.hasOwnProperty(projName)) {
-          presentByProject[projName]++;
-        }
-        if (emp.gender === "Male") maleCount++;
-        if (emp.gender === "Female") femaleCount++;
+    if (activeIds.length === 0) {
+      return res.json({
+        currentShift: mainStats.currentShift,
+        updatedAt: mainStats.updatedAt,
+        projects: [],
+        present: {},
+        activeByProject: {},
+        active: { total: 0, male: 0, female: 0 },
+        activeNow: {
+          LTL: mainStats.present.ltlActive || 0,
+          STL: mainStats.present.stlActive || 0,
+          IT: mainStats.present.special || 0,
+          ADMIN: mainStats.present.adminActive || 0
+        },
+        absent: { total: mainStats.absent.total, list: [] }
       });
     }
 
-    // 4. Absent list
-    const { data: allProjectEmps = [] } = await supabase
+    // ONE QUERY: Get ALL active employees with their REAL project from DB
+    const { data: activeEmployees, error } = await supabase
       .from("employees")
-      .select("id, full_name, project")
-      .in("project", safeProjectNames);
+      .select("id, name, project, gender")
+      .in("id", activeIds);
 
-    const absentList = allProjectEmps
-      .filter(emp => !checkedInIds.has(String(emp.id)))
-      .map(emp => ({
-        name: emp.full_name || `ID:${emp.id}`,
-        project: (emp.project || "—").trim()
-      }))
-      .slice(0, 20);
+    if (error) {
+      console.error("Supabase error:", error);
+      return res.status(500).json({ error: "Database error", details: error.message });
+    }
 
-    // 5. Active Now
-    const activeNow = {
-      LTL: 9,
-      STL: 1,
-      IT: 2,
-      ADMIN: 3
-    };
+    // Group by REAL project from database
+    const activeByProject = {};
 
-    // 6. Send response
+    (activeEmployees || []).forEach(emp => {
+      const proj = (emp.project || "No Project").trim();
+
+      if (!activeByProject[proj]) {
+        activeByProject[proj] = {
+          total: 0,
+          male: 0,
+          female: 0,
+          employees: []
+        };
+      }
+
+      activeByProject[proj].total++;
+      if (emp.gender === "Male") activeByProject[proj].male++;
+      if (emp.gender === "Female") activeByProject[proj].female++;
+
+      activeByProject[proj].employees.push({
+        id: emp.id,
+        name: emp.full_name || `ID:${emp.id}`
+      });
+    });
+
+    // Sort names in each project
+    Object.values(activeByProject).forEach(group => {
+      group.employees.sort((a, b) => a.name.localeCompare(b.name));
+    });
+
+    const projectList = Object.keys(activeByProject).sort();
+
     res.json({
-      currentShift,
-      updatedAt: getColomboTime().toLocaleString("en-LK", { timeZone: "Asia/Colombo" }),
+      currentShift: mainStats.currentShift,
+      updatedAt: mainStats.updatedAt,
 
-      projects: projects.map(p => ({
-        id: p.id,
-        name: p.name,
-        department: p.department || ""
-      })),
+      // ALL PROJECTS FROM DATABASE — NO HARDCODING
+      projects: projectList,
 
-      present: presentByProject,
+      // Present count per project
+      present: Object.fromEntries(
+        projectList.map(p => [p, activeByProject[p].total])
+      ),
 
-      gender: { male: maleCount, female: femaleCount },
+      // FULL DETAILS
+      activeByProject,
 
       active: {
-        total: maleCount + femaleCount,
-        male: maleCount,
-        female: femaleCount
+        total: activeNow.total,
+        male: activeNow.male,
+        female: activeNow.female
       },
 
-      absent: { total: absentList.length },
+      activeNow: {
+        LTL: mainStats.present.ltlActive || 0,
+        STL: mainStats.present.stlActive || 0,
+        IT: mainStats.present.special || 0,
+        ADMIN: mainStats.present.adminActive || 0
+      },
 
-      activeNow,
-      absentList
+      absent: {
+        total: mainStats.absent.total,
+        list: mainStats.absent.ids?.slice(0, 50).map(id => ({
+          id,
+          name: `ID:${id}`,
+          project: "—"
+        })) || []
+      }
     });
 
   } catch (error) {
-    console.error("[/api/stats-details] Error:", error);
-    res.status(500).json({
-      error: "Failed to load stats",
-      details: error.message
-    });
+    console.error("Stats Details Error:", error);
+    res.status(500).json({ error: "Server error", details: error.message });
   }
-});
-
-// Test route
-router.get("/test", (req, res) => {
-  res.json({
-    message: "Stats Details API is LIVE!",
-    shift: getCurrentShift(),
-    time: getColomboTime().toLocaleString("en-LK")
-  });
 });
 
 export default router;

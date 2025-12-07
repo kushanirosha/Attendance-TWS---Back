@@ -19,6 +19,7 @@ import attendanceLtlRoutes from "./routes/attendanceLtlRoutes.js";
 import authRoutes from "./routes/auth.js";
 import usersRoutes from "./routes/users.js";
 import statsDetailsRoutes from "./routes/statsDetailsRoutes.js";
+import activeNowRouter from "./routes/activeNow.js";
 
 import { getDashboardStats } from "./services/statsService.js";
 import { getAttendanceLogs } from "./services/attendanceService.js";
@@ -151,7 +152,8 @@ app.use('/api/attendancestl', attendanceStlRoutes);
 app.use('/api/attendanceadmin', attendanceAdminRoutes);
 app.use('/api/users', usersRoutes);
 app.use("/api/attendance/ltl", attendanceLtlRoutes);
-app.use('/api', statsDetailsRoutes);
+app.use('/api/stats-details', statsDetailsRoutes);
+app.use("/api/active-now", activeNowRouter);
 
 app.use('/api/auth', authRoutes);
 
