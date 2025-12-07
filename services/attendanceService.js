@@ -145,15 +145,27 @@ export async function getAttendanceLogs() {
     }
   }
 
-  // 5. Final Output — With perfect status logic
+    // === HIDE SENSITIVE PROJECT NAMES (e.g., ADMIN → ER) ===
+  const HIDDEN_PROJECT_EMPLOYEES = new Set(["1001", "1283"]); // Add more IDs if needed
+  const projectDisplayOverride = (empId, originalProject) => {
+    if (HIDDEN_PROJECT_EMPLOYEES.has(empId)) {
+      return "ER"; // Always show "ER" for these IDs, no matter what project they have
+    }
+    return originalProject;
+  };
+
+  // 5. Final Output — With perfect status logic + project name masking
   return Object.values(latestCheckIn).map((log) => {
     const empId = log.employee_id;
-    const assignedShift = todayShiftMap[empId]; // ← Assigned shift has top priority
+    const assignedShift = todayShiftMap[empId];
+
+    const originalProject = projectMap[empId] || "UNKNOWN";
+    const displayProject = projectDisplayOverride(empId, originalProject);
 
     return {
       id: empId,
       name: nameMap[empId] || log.employee_name || "Unknown",
-      project: projectMap[empId] || "UNKNOWN",
+      project: displayProject, // ← This will show "ER" instead of "ADMIN" for 1001 & 1283
       checkInTime: new Date(log.timestamp).toLocaleString("en-US", {
         timeZone: "Asia/Colombo",
         hour: "numeric",

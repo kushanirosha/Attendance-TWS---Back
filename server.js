@@ -4,9 +4,9 @@ import morgan from "morgan";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import { createServer } from "http";           // ← NEW
-import { Server } from "socket.io";             // ← NEW
-import { createClient } from "@supabase/supabase-js"; // ← NEW
+import { createServer } from "http";
+import { Server } from "socket.io";
+import { createClient } from "@supabase/supabase-js";
 
 import employeeRoutes from "./routes/employeeRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
@@ -23,6 +23,7 @@ import activeNowRouter from "./routes/activeNow.js";
 
 import { getDashboardStats } from "./services/statsService.js";
 import { getAttendanceLogs } from "./services/attendanceService.js";
+import { getCurrentShiftAndDate } from "./utils/getCurrentShift.js"; // ← NEW: Accurate shift detection
 
 dotenv.config();
 
@@ -31,15 +32,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // --------------------- HTTP + WebSocket Server ---------------------
-const httpServer = createServer(app);                     // ← Wrap Express
-const io = new Server(httpServer, {                       // ← Socket.IO
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
   cors: {
     origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
-    credentials: true
-  }
+    credentials: true,
+  },
 });
 
-// --------------------- Supabase Realtime Client ---------------------
+// --------------------- Supabase Client ---------------------
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
@@ -48,11 +49,14 @@ const supabase = createClient(
 // --------------------- Track Connected Dashboards ---------------------
 const dashboardClients = new Set();
 
+// Keep track of last known shift to detect change
+let lastKnownShift = null;
+
 io.on("connection", (socket) => {
   console.log("Dashboard connected:", socket.id);
   dashboardClients.add(socket);
 
-  // Send current data immediately
+  // Send latest data immediately
   broadcastLatestData();
 
   socket.on("disconnect", () => {
@@ -61,51 +65,44 @@ io.on("connection", (socket) => {
   });
 });
 
-// AUTO REFRESH ALL DASHBOARDS AT SHIFT CHANGE (5:30 AM, 1:30 PM, 9:30 PM)
+// --------------------- Smart & Accurate Shift Change Detection ---------------------
 setInterval(() => {
-  const now = new Date();
-  const colomboTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
-  const h = colomboTime.getHours();
-  const m = colomboTime.getMinutes();
-  const s = colomboTime.getSeconds();
+  const { currentShift } = getCurrentShiftAndDate();
 
-  if ((h === 5 && m === 30 && s < 10) ||
-    (h === 13 && m === 30 && s < 10) ||
-    (h === 21 && m === 30 && s < 10)) {
-    if (dashboardClients.size > 0) {
-      console.log(`SHIFT CHANGE → Refreshing ${dashboardClients.size} clients`);
-      io.emit("shift-change");
-    }
+  if (lastKnownShift && lastKnownShift !== currentShift) {
+    console.log(`SHIFT CHANGED → From ${lastKnownShift} to ${currentShift} (Smooth Update)`);
+    io.emit("shift-change"); // Just notify frontend — no reload!
+    broadcastLatestData();   // Immediately send fresh data
   }
-}, 1000);
 
+  lastKnownShift = currentShift;
+}, 5000); // Check every 5 seconds (safe & smooth)
 
-// --------------------- Broadcast Function ---------------------
+// --------------------- Broadcast Latest Data ---------------------
 async function broadcastLatestData() {
   try {
     const [stats, logs] = await Promise.all([
       getDashboardStats(),
-      getAttendanceLogs()
+      getAttendanceLogs(),
     ]);
 
     const payload = {
       stats,
-      logs,
+      logs: logs || [],
       updatedAt: new Date().toISOString(),
     };
 
-    // Send to ALL connected dashboards
-    dashboardClients.forEach(client => {
+    dashboardClients.forEach((client) => {
       client.emit("dashboard-update", payload);
     });
 
-    console.log(`Broadcasted to ${dashboardClients.size} dashboard(s)`);
+    console.log(`Broadcasted to ${dashboardClients.size} dashboard(s) | Shift: ${stats.currentShift}`);
   } catch (err) {
     console.error("Broadcast failed:", err.message);
   }
 }
 
-// --------------------- Supabase Realtime: Listen to New Check-ins ---------------------
+// --------------------- Supabase Realtime: New Check-ins ---------------------
 supabase
   .channel("attendance-changes")
   .on(
@@ -115,31 +112,27 @@ supabase
       schema: "public",
       table: "attendance_logs_check_in",
     },
-    (payload) => {
-      console.log("New check-in → Updating all dashboards");
+    () => {
+      console.log("New check-in detected → Updating all dashboards");
       broadcastLatestData();
     }
   )
   .subscribe((status) => {
-    console.log("Supabase Realtime:", status);
+    console.log("Supabase Realtime Status:", status);
   });
 
-// Optional: also listen to check-out if you have that table
-// .on("postgres_changes", { event: "INSERT", table: "attendance_logs_check_out" }, ...)
-
-// Send data on server start
-setTimeout(broadcastLatestData, 2000);
+// Send initial data on server start
+setTimeout(broadcastLatestData, 3000);
 
 // --------------------- Middlewares ---------------------
-app.use(cors({
-  origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
-  credentials: true,
-}));
-
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
+    credentials: true,
+  })
+);
 app.use(express.json());
 app.use(morgan("dev"));
-
-// Serve uploaded files
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --------------------- API Routes ---------------------
@@ -148,21 +141,20 @@ app.use("/api/attendance", attendanceRoutes);
 app.use("/api", projectRoutes);
 app.use("/api/shiftAssignments", shiftAssignmentsRoutes);
 app.use("/api/stats", statsRoutes);
-app.use('/api/attendancestl', attendanceStlRoutes);
-app.use('/api/attendanceadmin', attendanceAdminRoutes);
-app.use('/api/users', usersRoutes);
+app.use("/api/attendancestl", attendanceStlRoutes);
+app.use("/api/attendanceadmin", attendanceAdminRoutes);
+app.use("/api/users", usersRoutes);
 app.use("/api/attendance/ltl", attendanceLtlRoutes);
-app.use('/api/stats-details', statsDetailsRoutes);
+app.use("/api/stats-details", statsDetailsRoutes);
 app.use("/api/active-now", activeNowRouter);
-
-app.use('/api/auth', authRoutes);
+app.use("/api/auth", authRoutes);
 
 // --------------------- Error Handler ---------------------
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(err.status || 500).json({
     success: false,
-    message: err.message || "Server error"
+    message: err.message || "Server error",
   });
 });
 
@@ -171,5 +163,5 @@ const PORT = process.env.PORT || 3000;
 
 httpServer.listen(PORT, () => {
   console.log(`Server + WebSocket running on http://localhost:${PORT}`);
-  console.log(`WebSocket URL: ws://localhost:${PORT}`);
+  console.log(`Live Dashboard Ready → Smooth Updates, No Reloads!`);
 });

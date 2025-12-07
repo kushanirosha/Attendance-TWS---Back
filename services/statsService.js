@@ -1,193 +1,195 @@
 // services/statsService.js
 import { supabase } from "../config/db.js";
-import { getStlActiveNowCount } from "./attendanceStlService.js";
-import { getAdminActiveNowCount } from "./attendanceAdminService.js";
-import { getLtlActiveNowCount } from "./attendanceLtlService.js";
-import { getSpecialEmployeesActiveNowCount } from "./attendanceSpecialService.js";
 import { getActiveNowCount } from "./activeNowService.js";
-import { getAttendanceLogs } from "../services/attendanceService.js";  // ← YOUR PERFECT FILE
-
-const COLOMBO_TZ = "Asia/Colombo";
-const getColomboTime = (date = new Date()) => {
-  return new Date(date.toLocaleString("en-US", { timeZone: COLOMBO_TZ }));
-};
-
-const getOperationalDate = () => {
-  let c = getColomboTime();
-  if (c.getHours() < 5 || (c.getHours() === 5 && c.getMinutes() < 30)) {
-    c = new Date(c.getTime() - 24 * 60 * 60 * 1000);
-  }
-  return c;
-};
-
-const getTodayDateString = () => getOperationalDate().toISOString().split("T")[0];
-const getCurrentMonthYear = () => {
-  const d = getOperationalDate();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-};
-const getTodayDay = () => getOperationalDate().getDate().toString();
-
-const getCurrentShift = () => {
-  const colombo = getColomboTime();
-  const minutes = colombo.getHours() * 60 + colombo.getMinutes();
-  if (minutes >= 330 && minutes < 810) return "Morning";
-  if (minutes >= 810) return "Noon";
-  return "Night";
-};
+import { getAttendanceLogs } from "./attendanceService.js";
+import { getCurrentShiftAndDate } from '../utils/getCurrentShift.js';
 
 export const getDashboardStats = async () => {
-  const currentShiftName = getCurrentShift();
-  const today = getTodayDateString();
-  const monthYear = getCurrentMonthYear();
-  const todayDay = getTodayDay();
+  const { currentShift, shiftDate } = getCurrentShiftAndDate();
+  const operationalDate = shiftDate;
+  
+  const colomboNow = new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" });
+  const calendarDate = colomboNow.split(",")[0].trim();
+  const [month, day, year] = calendarDate.split("/");
+  const displayDate = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 
-  const shiftMap = { A: "Morning", B: "Noon", C: "Night" };
-  const currentShiftCode = Object.keys(shiftMap).find(k => shiftMap[k] === currentShiftName);
+  const today = operationalDate;
+  const monthYear = today.slice(0, 7);
+  const todayDayPadded = today.split("-")[2];
+  const todayDayRaw = todayDayPadded.replace(/^0/, '');
+
+  console.log("=== DATE DEBUG ===");
+  console.log("Operational Date (for shift logic):", today);
+  console.log("Calendar Date (what people see):   ", displayDate);
+  console.log("Current Shift:", currentShift);
+  console.log("Colombo Time Now:", new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
+  console.log("================\n");
+
+  const shiftNameToCode = { Morning: "A", Noon: "B", Night: "C", morning: "A", noon: "B", night: "C" };
+  const currentShiftCode = shiftNameToCode[currentShift];
+
+  // Only exclude specific employee IDs (e.g., test/fake accounts)
+  const EXCLUDED_EMPLOYEE_IDS = new Set(["1007"]);
+
+  // These projects are NO LONGER excluded from shift logic (TL, ADMIN, etc. will now be counted)
+  const EXCLUDED_PROJECTS = new Set([]); // ← Now empty! Or keep only if you still want to filter something else
 
   try {
-    const activeNow = await getActiveNowCount();
-    const attendanceLogs = await getAttendanceLogs();  // ← YOUR PERFECT LOGIC
-
     const [
+      activeNowResult,
+      attendanceLogs,
       { data: employeesAll = [] },
       { data: employeesWithProject = [] },
-      { data: shiftRecords = [] },
-      stlResult,
-      adminResult,
-      ltlResult
+      { data: shiftRecords = [] }
     ] = await Promise.all([
+      getActiveNowCount(),
+      getAttendanceLogs(today),
       supabase.from("employees").select("id, gender"),
-      supabase.from("employees").select("id, gender, project"),
-      supabase.from("shift_assignments").select("assignments").eq("month_year", monthYear),
-      getStlActiveNowCount().catch(() => ({ total: 0, male: 0, female: 0, activeEmployeeIds: [] })),
-      getAdminActiveNowCount().catch(() => ({ total: 0, male: 0, female: 0, activeEmployeeIds: [] })),
-      getLtlActiveNowCount().catch(() => ({ total: 0, male: 0, female: 0, activeEmployeeIds: [] }))
+      supabase.from("employees").select("id, project"),
+      supabase.from("shift_assignments").select("assignments").eq("month_year", monthYear)
     ]);
 
-    const specialResult = await getSpecialEmployeesActiveNowCount();
-    const specialActiveObj = specialResult || { total: 0, male: 0, female: 0, activeEmployeeIds: [] };
+    const activeNow = activeNowResult || { total: 0, male: 0, female: 0, activeEmployeeIds: [] };
+    const presentIds = new Set(activeNow.activeEmployeeIds.map(String));
 
-    const EXCLUDED_PROJECTS = new Set(["TTL", "STL", "ASS. TL", "TL", "ADMIN", "CLEANING", "LTL"]);
-    const excludedForPresentIds = new Set([
-      "1007",
-      ...employeesWithProject
-        .filter(emp => emp.project && EXCLUDED_PROJECTS.has(emp.project.trim()))
-        .map(emp => String(emp.id))
-    ]);
-
-    const specialEmployeeIds = new Set([
-      ...(stlResult?.activeEmployeeIds || []),
-      ...(adminResult?.activeEmployeeIds || []),
-      ...(ltlResult?.activeEmployeeIds || []),
-      ...(specialActiveObj?.activeEmployeeIds || []),
-      ...excludedForPresentIds
-    ]);
-
-    const currentShiftEmployees = new Set();
-    const rdToday = new Set();
-
-    (shiftRecords || []).forEach(record => {
-      let assignments;
-      try {
-        assignments = typeof record.assignments === "string" ? JSON.parse(record.assignments) : record.assignments;
-      } catch (e) { return; }
-      if (!assignments || typeof assignments !== "object") return;
-
-      Object.entries(assignments).forEach(([empId, days]) => {
-        const id = String(empId);
-        const shiftToday = days?.[todayDay];
-        if (!shiftToday) return;
-        if (shiftToday === "RD") rdToday.add(id);
-        else if (shiftToday === currentShiftCode || shiftMap[shiftToday] === currentShiftName)
-          currentShiftEmployees.add(id);
-      });
-    });
-
-    const activeIds = new Set(activeNow.activeEmployeeIds?.map(String) || []);
-    const presentInShift = new Set([...activeIds].filter(id => currentShiftEmployees.has(id)));
-
-    const absentInShift = new Set(
-      [...currentShiftEmployees]
-        .filter(id => !presentInShift.has(id))
-        .filter(id => !rdToday.has(id))
-        .filter(id => !specialEmployeeIds.has(id))
-        .filter(id => id !== "1007")
+    // === Only exclude specific employee IDs (like test accounts), NOT project-based roles ===
+    const excludedIds = new Set(
+      employeesWithProject
+        .filter(e => EXCLUDED_EMPLOYEE_IDS.has(String(e.id)))
+        .map(e => String(e.id))
     );
 
-    const maleIds = new Set(employeesAll.filter(e => e?.gender === "Male").map(e => String(e.id)));
-    const femaleIds = new Set(employeesAll.filter(e => e?.gender === "Female").map(e => String(e.id)));
+    // === Parse shift assignments (now includes TL, ADMIN, etc.) ===
+    const scheduledToday = new Set();
+    const restDayToday = new Set();
 
-    const countGenderSet = (set) => {
-      if (!set?.size) return { male: 0, female: 0, total: 0 };
-      const m = [...set].filter(id => maleIds.has(id)).length;
-      const f = [...set].filter(id => femaleIds.has(id)).length;
-      return { male: m, female: f, total: set.size };
-    };
+    for (const record of shiftRecords || []) {
+      let assignments;
+      try {
+        assignments = typeof record.assignments === "string"
+          ? JSON.parse(record.assignments)
+          : record.assignments;
+      } catch (e) {
+        console.warn("Failed to parse shift assignments:", e);
+        continue;
+      }
 
-    const absentStats = countGenderSet(absentInShift);
-    const rdStats = countGenderSet(rdToday);
-    const absentIds = [...absentInShift].sort((a, b) => a - b);
+      if (!assignments || typeof assignments !== "object") continue;
 
-    // USE YOUR PERFECT attendance.js LOGIC FOR LATE COUNT
-    const lateCount = attendanceLogs.filter(log => 
-      log.status === "Late" || log.status === "Half day"
-    ).length;
+      for (const [empId, days] of Object.entries(assignments)) {
+        const id = String(empId);
 
-    const onTimeCount = attendanceLogs.filter(log => 
-      log.status === "On time"
-    ).length;
+        // Only skip explicitly excluded IDs (e.g., test employees)
+        if (excludedIds.has(id)) continue;
 
-    const finalPresentTotal = activeNow.total || 0;
-    const finalPresentMale = activeNow.male || 0;
-    const finalPresentFemale = activeNow.female || 0;
+        const shiftValue = days?.[todayDayPadded] ?? days?.[todayDayRaw];
+        if (!shiftValue) continue;
 
-    console.log(`\nLATE TODAY: ${lateCount} | ON TIME: ${onTimeCount} | TOTAL LOGS: ${attendanceLogs.length}`);
+        const val = String(shiftValue).trim().toUpperCase();
 
+        if (val === "RD") {
+          restDayToday.add(id);
+        } else if (val === currentShiftCode) {
+          scheduledToday.add(id);
+        }
+      }
+    }
+
+    // === Absent = Scheduled today BUT NOT present ===
+    const absentIds = new Set();
+    for (const id of scheduledToday) {
+      if (!presentIds.has(id)) {
+        absentIds.add(id);
+      }
+    }
+    const sortedAbsentIds = [...absentIds].sort((a, b) => Number(a) - Number(b));
+
+    // === Gender sets ===
+    const maleIds = new Set(employeesAll.filter(e => e.gender === "Male").map(e => String(e.id)));
+    const femaleIds = new Set(employeesAll.filter(e => e.gender === "Female").map(e => String(e.id)));
+
+    const countGender = (set) => ({
+      male: [...set].filter(id => maleIds.has(id)).length,
+      female: [...set].filter(id => femaleIds.has(id)).length,
+      total: set.size
+    });
+
+    const absentStats = countGender(absentIds);
+    const restDayStats = countGender(restDayToday);
+
+    // === Late count: Now includes TL, ADMIN, etc. if they are scheduled & have logs ===
+    const scheduledEmployeeIds = new Set([...scheduledToday]);
+    const scheduledLogs = attendanceLogs.filter(log => {
+      const empId = String(log.employee_id || log.id);
+      return scheduledEmployeeIds.has(empId);
+    });
+
+    const lateLogs = scheduledLogs.filter(l => l.status === "Late" || l.status === "Half day");
+    const lateCount = lateLogs.length;
+
+    const lateMaleCount = lateLogs.filter(l => {
+      const id = String(l.employee_id || l.id);
+      return maleIds.has(id);
+    }).length;
+
+    const lateFemaleCount = lateLogs.filter(l => {
+      const id = String(l.employee_id || l.id);
+      return femaleIds.has(id);
+    }).length;
+
+    const onTimeOrLateTotal = scheduledLogs.length;
+    const latePercentage = onTimeOrLateTotal > 0
+      ? ((lateCount / onTimeOrLateTotal) * 100).toFixed(1) + "%"
+      : "0.0%";
+
+    // === Final Response ===
     return {
-      currentShift: currentShiftName,
-      updatedAt: getColomboTime().toLocaleString("en-US", { timeZone: COLOMBO_TZ }),
+      currentShift,
+      shiftDate: today,
+      updatedAt: new Date().toISOString(),
 
       totalEmployees: {
-        male: employeesAll.filter(e => e.gender === "Male").length,
-        female: employeesAll.filter(e => e.gender === "Female").length,
+        male: maleIds.size,
+        female: femaleIds.size,
         total: employeesAll.length,
       },
 
       present: {
-        total: finalPresentTotal,
-        regular: finalPresentTotal - (stlResult.total + adminResult.total + ltlResult.total + specialActiveObj.total),
-        stlActive: stlResult.total || 0,
-        adminActive: adminResult.total || 0,
-        ltlActive: ltlResult.total || 0,
-        special: specialActiveObj.total || 0,
-        male: finalPresentMale,
-        female: finalPresentFemale,
-        onTime: onTimeCount,
-        late: lateCount,
-        halfDay: attendanceLogs.filter(l => l.status === "Half day").length,
+        total: activeNow.total,
+        male: activeNow.male,
+        female: activeNow.female,
       },
 
       absent: {
+        total: absentStats.total,
         male: absentStats.male,
         female: absentStats.female,
-        total: absentStats.total,
-        ids: absentIds,
+        ids: sortedAbsentIds,
       },
 
       restDayShift: {
-        male: rdStats.male,
-        female: rdStats.female,
-        total: rdStats.total,
+        total: restDayStats.total,
+        male: restDayStats.male,
+        female: restDayStats.female,
       },
 
       lateComing: {
         total: lateCount,
-        percentage: (onTimeCount + lateCount) > 0
-          ? ((lateCount / (onTimeCount + lateCount)) * 100).toFixed(1) + "%"
-          : "0.0%",
-        male: 0,
-        female: 0,
+        male: lateMaleCount,
+        female: lateFemaleCount,
+        percentage: latePercentage,
       },
+
+      _debug: {
+        currentShiftCode,
+        scheduledCount: scheduledToday.size,
+        restDayCount: restDayToday.size,
+        presentInFactoryCount: activeNow.total,
+        absentCount: absentIds.size,
+        lateCount,
+        scheduledLogsCount: scheduledLogs.length,
+        message: "TL, ADMIN, LTL, etc. are NOW INCLUDED in Absent/Late/RestDay counts"
+      }
     };
 
   } catch (error) {

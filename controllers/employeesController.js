@@ -1,3 +1,4 @@
+// controllers/employeesController.js
 import { supabase } from "../config/db.js";
 import { upload } from "../config/multer.js";
 import path from "path";
@@ -50,9 +51,7 @@ export const updateEmployee = async (req, res) => {
   const { id } = req.params;
   const updates = { ...req.body };
 
-  // ---- replace image ----
   if (req.file) {
-    // delete old file
     const { data: old } = await supabase
       .from("employees")
       .select("profileImage")
