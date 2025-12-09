@@ -18,11 +18,11 @@ export const getActiveNowCount = async () => {
       genderMap[String(e.id)] = e.gender || "Unknown";
     });
 
-    // 2. Last 14 hours in UTC (proven working window)
+    // 2. Last 13 hours in UTC (proven working window)
     const now = new Date();
-    const windowStart = new Date(now.getTime() - 14 * 60 * 60 * 1000); // 14 hours ago
+    const windowStart = new Date(now.getTime() - 13 * 60 * 60 * 1000); // 13 hours ago
 
-    // 3. Fetch check-ins & check-outs in last 14 hours
+    // 3. Fetch check-ins & check-outs in last 13 hours
     const [inRes, outRes] = await Promise.all([
       supabase
         .from("attendance_logs_check_in")

@@ -7,7 +7,7 @@ import { getCurrentShiftAndDate } from '../utils/getCurrentShift.js';
 export const getDashboardStats = async () => {
   const { currentShift, shiftDate } = getCurrentShiftAndDate();
   const operationalDate = shiftDate;
-  
+
   const colomboNow = new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" });
   const calendarDate = colomboNow.split(",")[0].trim();
   const [month, day, year] = calendarDate.split("/");
@@ -103,6 +103,7 @@ export const getDashboardStats = async () => {
       }
     }
     const sortedAbsentIds = [...absentIds].sort((a, b) => Number(a) - Number(b));
+    console.log("Absent employee IDs:", sortedAbsentIds);
 
     // === Gender sets ===
     const maleIds = new Set(employeesAll.filter(e => e.gender === "Male").map(e => String(e.id)));
@@ -126,6 +127,13 @@ export const getDashboardStats = async () => {
 
     const lateLogs = scheduledLogs.filter(l => l.status === "Late" || l.status === "Half day");
     const lateCount = lateLogs.length;
+
+    // === ADD THIS TO SEE THE EMPLOYEE IDs THAT ARE LATE ===
+    const lateEmployeeIds = lateLogs.map(log => String(log.employee_id || log.id));
+    console.log("Late employee IDs:", lateEmployeeIds);
+    console.log("Total late:", lateEmployeeIds.length);
+    // Optional: pretty print as a comma-separated string
+    console.log("Late IDs:", lateEmployeeIds.join(", "));
 
     const lateMaleCount = lateLogs.filter(l => {
       const id = String(l.employee_id || l.id);
