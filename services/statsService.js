@@ -31,8 +31,8 @@ export const getDashboardStats = async () => {
   // Only exclude specific employee IDs (e.g., test/fake accounts)
   const EXCLUDED_EMPLOYEE_IDS = new Set(["1007"]);
 
-  // These projects are NO LONGER excluded from shift logic (TL, ADMIN, etc. will now be counted)
-  const EXCLUDED_PROJECTS = new Set([]); // ← Now empty! Or keep only if you still want to filter something else
+  // These projects are NO LONGER excluded from shift logic
+  const EXCLUDED_PROJECTS = new Set([]); // ← Intentionally empty
 
   try {
     const [
@@ -52,7 +52,7 @@ export const getDashboardStats = async () => {
     const activeNow = activeNowResult || { total: 0, male: 0, female: 0, activeEmployeeIds: [] };
     const presentIds = new Set(activeNow.activeEmployeeIds.map(String));
 
-    // === Only exclude specific employee IDs (like test accounts), NOT project-based roles ===
+    // === Exclude only specific test/fake employees ===
     const excludedIds = new Set(
       employeesWithProject
         .filter(e => EXCLUDED_EMPLOYEE_IDS.has(String(e.id)))
@@ -79,7 +79,6 @@ export const getDashboardStats = async () => {
       for (const [empId, days] of Object.entries(assignments)) {
         const id = String(empId);
 
-        // Only skip explicitly excluded IDs (e.g., test employees)
         if (excludedIds.has(id)) continue;
 
         const shiftValue = days?.[todayDayPadded] ?? days?.[todayDayRaw];
@@ -118,22 +117,28 @@ export const getDashboardStats = async () => {
     const absentStats = countGender(absentIds);
     const restDayStats = countGender(restDayToday);
 
-    // === Late count: Now includes TL, ADMIN, etc. if they are scheduled & have logs ===
-    const scheduledEmployeeIds = new Set([...scheduledToday]);
-    const scheduledLogs = attendanceLogs.filter(log => {
+    // === LATE COMERS: FIXED — Only count if scheduled + currently PRESENT + has Late/Half-day log ===
+    const lateLogs = attendanceLogs.filter(log => {
       const empId = String(log.employee_id || log.id);
-      return scheduledEmployeeIds.has(empId);
+
+      return (
+        scheduledToday.has(empId) &&           // Must be scheduled today
+        presentIds.has(empId) &&               // Must be currently present (NOT absent)
+        (log.status === "Late" || log.status === "Half day")
+      );
     });
 
-    const lateLogs = scheduledLogs.filter(l => l.status === "Late" || l.status === "Half day");
     const lateCount = lateLogs.length;
-
-    // === ADD THIS TO SEE THE EMPLOYEE IDs THAT ARE LATE ===
     const lateEmployeeIds = lateLogs.map(log => String(log.employee_id || log.id));
-    console.log("Late employee IDs:", lateEmployeeIds);
-    console.log("Total late:", lateEmployeeIds.length);
-    // Optional: pretty print as a comma-separated string
-    console.log("Late IDs:", lateEmployeeIds.join(", "));
+
+    // Debug: Warn if anyone is both absent and late (should never happen now)
+    const conflicts = lateEmployeeIds.filter(id => absentIds.has(id));
+    if (conflicts.length > 0) {
+      console.warn("DATA INTEGRITY ERROR: Employees marked as both Absent and Late:", conflicts);
+    }
+
+    console.log("Late employee IDs (final):", lateEmployeeIds);
+    console.log("Total late (correct):", lateCount);
 
     const lateMaleCount = lateLogs.filter(l => {
       const id = String(l.employee_id || l.id);
@@ -145,7 +150,11 @@ export const getDashboardStats = async () => {
       return femaleIds.has(id);
     }).length;
 
-    const onTimeOrLateTotal = scheduledLogs.length;
+    const onTimeOrLateTotal = attendanceLogs.filter(log => {
+      const empId = String(log.employee_id || log.id);
+      return scheduledToday.has(empId) && presentIds.has(empId);
+    }).length;
+
     const latePercentage = onTimeOrLateTotal > 0
       ? ((lateCount / onTimeOrLateTotal) * 100).toFixed(1) + "%"
       : "0.0%";
@@ -195,8 +204,8 @@ export const getDashboardStats = async () => {
         presentInFactoryCount: activeNow.total,
         absentCount: absentIds.size,
         lateCount,
-        scheduledLogsCount: scheduledLogs.length,
-        message: "TL, ADMIN, LTL, etc. are NOW INCLUDED in Absent/Late/RestDay counts"
+        scheduledAndPresentCount: onTimeOrLateTotal,
+        message: "FIXED: Absent employees are now EXCLUDED from late count. TL/ADMIN included in all stats."
       }
     };
 
