@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
@@ -7,6 +8,10 @@ import { fileURLToPath } from "url";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { createClient } from "@supabase/supabase-js";
+
+import { getDashboardStats } from "./services/statsService.js";
+import { getAttendanceLogs } from "./services/attendanceService.js";
+import { getCurrentShiftAndDate } from "./utils/getCurrentShift.js";
 
 import employeeRoutes from "./routes/employeeRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
@@ -21,65 +26,44 @@ import usersRoutes from "./routes/users.js";
 import statsDetailsRoutes from "./routes/statsDetailsRoutes.js";
 import activeNowRouter from "./routes/activeNow.js";
 
-import { getDashboardStats } from "./services/statsService.js";
-import { getAttendanceLogs } from "./services/attendanceService.js";
-import { getCurrentShiftAndDate } from "./utils/getCurrentShift.js"; // ← NEW: Accurate shift detection
-
 dotenv.config();
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --------------------- HTTP + WebSocket Server ---------------------
+// ───────────────────── CRASH PROTECTION (MUST HAVE) ─────────────────────
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION! Server kept alive:", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION! Server kept alive:", reason);
+});
+
+// ───────────────────── HTTP + SOCKET.IO SERVER ─────────────────────
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
-    credentials: true,
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    methods: ["GET", "POST"],
   },
+  pingInterval: 10000,    // Server pings client every 10s
+  pingTimeout: 5000,      // If no pong in 5s → disconnect
+  maxHttpBufferSize: 1e8,
 });
 
-// --------------------- Supabase Client ---------------------
+// ───────────────────── SUPABASE ─────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
 
-// --------------------- Track Connected Dashboards ---------------------
+// ───────────────────── GLOBAL STATE ─────────────────────
 const dashboardClients = new Set();
+let lastShift = null;
 
-// Keep track of last known shift to detect change
-let lastKnownShift = null;
-
-io.on("connection", (socket) => {
-  console.log("Dashboard connected:", socket.id);
-  dashboardClients.add(socket);
-
-  // Send latest data immediately
-  broadcastLatestData();
-
-  socket.on("disconnect", () => {
-    console.log("Dashboard disconnected:", socket.id);
-    dashboardClients.delete(socket);
-  });
-});
-
-// --------------------- Smart & Accurate Shift Change Detection ---------------------
-setInterval(() => {
-  const { currentShift } = getCurrentShiftAndDate();
-
-  if (lastKnownShift && lastKnownShift !== currentShift) {
-    console.log(`SHIFT CHANGED → From ${lastKnownShift} to ${currentShift} (Smooth Update)`);
-    io.emit("shift-change"); // Just notify frontend — no reload!
-    broadcastLatestData();   // Immediately send fresh data
-  }
-
-  lastKnownShift = currentShift;
-}, 5000); // Check every 5 seconds (safe & smooth)
-
-// --------------------- Broadcast Latest Data ---------------------
-async function broadcastLatestData() {
+// ───────────────────── MAIN BROADCAST FUNCTION ─────────────────────
+async function broadcastDashboard() {
   try {
     const [stats, logs] = await Promise.all([
       getDashboardStats(),
@@ -92,17 +76,52 @@ async function broadcastLatestData() {
       updatedAt: new Date().toISOString(),
     };
 
-    dashboardClients.forEach((client) => {
-      client.emit("dashboard-update", payload);
-    });
+    // Send to ALL connected dashboards
+    for (const client of dashboardClients) {
+      if (client.connected) {
+        client.emit("dashboard-update", payload);
+      }
+    }
 
-    console.log(`Broadcasted to ${dashboardClients.size} dashboard(s) | Shift: ${stats.currentShift}`);
+    console.log(`Live update sent → ${dashboardClients.size} client(s) | ${stats.currentShift} Shift`);
   } catch (err) {
     console.error("Broadcast failed:", err.message);
   }
 }
 
-// --------------------- Supabase Realtime: New Check-ins ---------------------
+// ───────────────────── SOCKET CONNECTIONS ─────────────────────
+io.on("connection", (socket) => {
+  console.log("Dashboard connected:", socket.id);
+  dashboardClients.add(socket);
+
+  // Send immediate update
+  broadcastDashboard();
+
+  // Optional: client can request manual refresh
+  socket.on("request-update", () => {
+    console.log("Manual update requested by client");
+    broadcastDashboard();
+  });
+
+  socket.on("disconnect", (reason) => {
+    console.log("Dashboard disconnected:", socket.id, reason);
+    dashboardClients.delete(socket);
+  });
+});
+
+// ───────────────────── SHIFT CHANGE DETECTION (Every 5s) ─────────────────────
+setInterval(() => {
+  const { currentShift } = getCurrentShiftAndDate();
+
+  if (lastShift && lastShift !== currentShift) {
+    console.log(`SHIFT CHANGE DETECTED: ${lastShift} → ${currentShift}`);
+    io.emit("shift-change");
+    broadcastDashboard();
+  }
+  lastShift = currentShift;
+}, 5000);
+
+// ───────────────────── SUPABASE REALTIME LISTENER ─────────────────────
 supabase
   .channel("attendance-changes")
   .on(
@@ -112,30 +131,29 @@ supabase
       schema: "public",
       table: "attendance_logs_check_in",
     },
-    () => {
-      console.log("New check-in detected → Updating all dashboards");
-      broadcastLatestData();
+    (payload) => {
+      console.log("New check-in → Live update triggered");
+      broadcastDashboard();
     }
   )
-  .subscribe((status) => {
-    console.log("Supabase Realtime Status:", status);
+  .subscribe((status, err) => {
+    console.log("Supabase Realtime:", status, err ? err : "");
   });
 
-// Send initial data on server start
-setTimeout(broadcastLatestData, 3000);
+// ───────────────────── HEARTBEAT: Keep connection alive (CRITICAL!) ─────────────────────
+setInterval(() => {
+  broadcastDashboard(); // This runs every 30 seconds → keeps socket alive forever
+}, 30000);
 
-// --------------------- Middlewares ---------------------
-app.use(
-  cors({
-    origin: ["http://localhost:5173", "https://tws.ceyloncreative.online"],
-    credentials: true,
-  })
-);
+// Initial broadcast after 3s
+setTimeout(broadcastDashboard, 3000);
+
+// ───────────────────── MIDDLEWARES & ROUTES ─────────────────────
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(morgan("dev"));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// --------------------- API Routes ---------------------
 app.use("/api", employeeRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api", projectRoutes);
@@ -149,19 +167,14 @@ app.use("/api/stats-details", statsDetailsRoutes);
 app.use("/api/active-now", activeNowRouter);
 app.use("/api/auth", authRoutes);
 
-// --------------------- Error Handler ---------------------
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || "Server error",
-  });
+app.get("/", (req, res) => {
+  res.send("Attendance Dashboard Server Running - Local 24/7 Mode");
 });
 
-// --------------------- Start Server ---------------------
+// ───────────────────── START SERVER ─────────────────────
 const PORT = process.env.PORT || 3000;
-
-httpServer.listen(PORT, () => {
-  console.log(`Server + WebSocket running on http://localhost:${PORT}`);
-  console.log(`Live Dashboard Ready → Smooth Updates, No Reloads!`);
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`\n SERVER RUNNING ON http://localhost:${PORT}`);
+  console.log(` REAL-TIME DASHBOARD IS NOW 24/7 STABLE ON LOCALHOST`);
+  console.log(` Open your frontend and leave it running → It will NEVER die!\n`);
 });
