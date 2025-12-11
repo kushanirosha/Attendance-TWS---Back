@@ -3,7 +3,6 @@ import express from "express";
 import { supabase } from "../config/db.js";
 import { getActiveNowCount } from "../services/activeNowService.js";
 import { getDashboardStats } from "../services/statsService.js";
-import { getAdminActiveNowCount } from "../services/attendanceAdminService.js";
 
 const router = express.Router();
 
@@ -14,22 +13,15 @@ router.get("/", async (req, res) => {
 
     const activeIds = (activeNow.activeEmployeeIds || []).map(String);
 
-    // === Gender-wise activeNow (from previous update) ===
+    // Initialize activeNow gender breakdown (all start at 0)
     const activeNowCounts = {
-      LTL: { total: 0, male: 0, female: 0 },
-      STL: { total: 0, male: 0, female: 0 },
-      IT:  { total: 0, male: 0, female: 0 },
+      LTL:   { total: 0, male: 0, female: 0 },
+      STL:   { total: 0, male: 0, female: 0 },
+      IT:    { total: 0, male: 0, female: 0 },
       ADMIN: { total: 0, male: 0, female: 0 }
     };
 
-    const adminActive = await getAdminActiveNowCount();
-    activeNowCounts.ADMIN = {
-      total: adminActive.total,
-      male: adminActive.male,
-      female: adminActive.female
-    };
-
-    // === NEW: Fetch real absent employee details (name + project) ===
+    // === Fetch real absent employee details (name + project) ===
     let absentList = [];
     if (mainStats.absent?.ids && mainStats.absent.ids.length > 0) {
       const { data: absentEmployees, error: absentErr } = await supabase
@@ -44,7 +36,6 @@ router.get("/", async (req, res) => {
           project: emp.project || "—"
         }));
       } else {
-        // Fallback: keep ID-only if query fails
         absentList = mainStats.absent.ids.map(id => ({
           id,
           name: `ID:${id}`,
@@ -52,8 +43,8 @@ router.get("/", async (req, res) => {
         }));
       }
     }
-    // ====================================================
 
+    // If no one is active
     if (activeIds.length === 0) {
       return res.json({
         currentShift: mainStats.currentShift,
@@ -63,13 +54,11 @@ router.get("/", async (req, res) => {
         activeByProject: {},
         active: { total: 0, male: 0, female: 0 },
         activeNow: activeNowCounts,
-        absent: { 
-          total: mainStats.absent.total, 
-          list: absentList 
-        }
+        absent: { total: mainStats.absent.total, list: absentList }
       });
     }
 
+    // === Fetch all active employees with details ===
     const { data: activeEmployees, error } = await supabase
       .from("employees")
       .select("id, name, project, gender")
@@ -83,9 +72,12 @@ router.get("/", async (req, res) => {
     const activeByProject = {};
 
     (activeEmployees || []).forEach(emp => {
+      const id = emp.id.toString();
+      const name = emp.name || `ID:${id}`;
       const proj = (emp.project || "No Project").trim();
-      const gender = (emp.gender || "Unknown").trim();
+      const gender = (emp.gender || "Unknown").trim().toLowerCase() === "female" ? "Female" : "Male";
 
+      // === Build activeByProject ===
       if (!activeByProject[proj]) {
         activeByProject[proj] = {
           total: 0,
@@ -97,33 +89,39 @@ router.get("/", async (req, res) => {
       activeByProject[proj].total++;
       if (gender === "Male") activeByProject[proj].male++;
       if (gender === "Female") activeByProject[proj].female++;
-      activeByProject[proj].employees.push({
-        id: emp.id,
-        name: emp.name || `ID:${emp.id}`
-      });
+      activeByProject[proj].employees.push({ id, name });
 
-      // activeNow gender count
+      // === Build activeNowCounts (LTL, STL, IT, ADMIN) ===
       if (["ASS. TL", "TL", "TTL"].includes(proj)) {
         activeNowCounts.LTL.total++;
         if (gender === "Male") activeNowCounts.LTL.male++;
         if (gender === "Female") activeNowCounts.LTL.female++;
-      } else if (proj === "STL") {
+      }
+      else if (proj === "STL") {
         activeNowCounts.STL.total++;
         if (gender === "Male") activeNowCounts.STL.male++;
         if (gender === "Female") activeNowCounts.STL.female++;
-      } else if (proj === "IT") {
+      }
+      else if (proj === "IT") {
         activeNowCounts.IT.total++;
         if (gender === "Male") activeNowCounts.IT.male++;
         if (gender === "Female") activeNowCounts.IT.female++;
       }
+      else if (proj === "ADMIN") {
+        activeNowCounts.ADMIN.total++;
+        if (gender === "Male") activeNowCounts.ADMIN.male++;
+        if (gender === "Female") activeNowCounts.ADMIN.female++;
+      }
     });
 
+    // Sort employee names alphabetically in each project
     Object.values(activeByProject).forEach(group => {
       group.employees.sort((a, b) => a.name.localeCompare(b.name));
     });
 
     const projectList = Object.keys(activeByProject).sort();
 
+    // Final response
     res.json({
       currentShift: mainStats.currentShift,
       updatedAt: mainStats.updatedAt,
@@ -133,14 +131,14 @@ router.get("/", async (req, res) => {
       ),
       activeByProject,
       active: {
-        total: activeNow.total,
-        male: activeNow.male,
-        female: activeNow.female
+        total: activeNow.total || activeEmployees.length,
+        male: activeNow.male || 0,
+        female: activeNow.female || 0
       },
       activeNow: activeNowCounts,
       absent: {
         total: mainStats.absent.total,
-        list: absentList  // ← Now shows real name + project
+        list: absentList
       }
     });
 

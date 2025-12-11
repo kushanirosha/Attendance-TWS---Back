@@ -1,4 +1,10 @@
-// server.js
+// FIX FOR WINDOWS + NODE.JS FETCH FAILING (2025 WORKING VERSION)
+import fetch from "cross-fetch";
+globalThis.fetch = fetch;
+globalThis.Headers = fetch.Headers;
+globalThis.Request = fetch.Request;
+globalThis.Response = fetch.Response;
+
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
