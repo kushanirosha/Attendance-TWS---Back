@@ -3,6 +3,7 @@ import { supabase } from "../config/db.js";
 import { getActiveNowCount } from "./activeNowService.js";
 import { getAttendanceLogs } from "./attendanceService.js";
 import { getCurrentShiftAndDate } from '../utils/getCurrentShift.js';
+import { getRestDayStatsForShift } from "./restDayService.js";
 
 export const getDashboardStats = async () => {
   const { currentShift, shiftDate } = getCurrentShiftAndDate();
@@ -61,7 +62,6 @@ export const getDashboardStats = async () => {
 
     // === Parse shift assignments (now includes TL, ADMIN, etc.) ===
     const scheduledToday = new Set();
-    const restDayToday = new Set();
 
     for (const record of shiftRecords || []) {
       let assignments;
@@ -86,9 +86,7 @@ export const getDashboardStats = async () => {
 
         const val = String(shiftValue).trim().toUpperCase();
 
-        if (val === "RD") {
-          restDayToday.add(id);
-        } else if (val === currentShiftCode) {
+        if (val === currentShiftCode) {
           scheduledToday.add(id);
         }
       }
@@ -115,7 +113,9 @@ export const getDashboardStats = async () => {
     });
 
     const absentStats = countGender(absentIds);
-    const restDayStats = countGender(restDayToday);
+
+    // === Get rest day stats for current shift ===
+    const restDayStats = await getRestDayStatsForShift(currentShiftCode, today, excludedIds, maleIds, femaleIds);
 
     // === LATE COMERS: FIXED — Only count if scheduled + currently PRESENT + has Late/Half-day log ===
     const lateLogs = attendanceLogs.filter(log => {
@@ -200,12 +200,12 @@ export const getDashboardStats = async () => {
       _debug: {
         currentShiftCode,
         scheduledCount: scheduledToday.size,
-        restDayCount: restDayToday.size,
+        restDayCount: restDayStats.total,
         presentInFactoryCount: activeNow.total,
         absentCount: absentIds.size,
         lateCount,
         scheduledAndPresentCount: onTimeOrLateTotal,
-        message: "FIXED: Absent employees are now EXCLUDED from late count. TL/ADMIN included in all stats."
+        message: "FIXED: Absent employees are now EXCLUDED from late count. TL/ADMIN included in all stats. Rest day count now shift-specific based on previous day assignment."
       }
     };
 
