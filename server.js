@@ -1,4 +1,3 @@
-// FIX FOR WINDOWS + NODE.JS FETCH FAILING (2025 WORKING VERSION)
 import fetch from "cross-fetch";
 globalThis.fetch = fetch;
 globalThis.Headers = fetch.Headers;
@@ -31,6 +30,7 @@ import authRoutes from "./routes/auth.js";
 import usersRoutes from "./routes/users.js";
 import statsDetailsRoutes from "./routes/statsDetailsRoutes.js";
 import activeNowRouter from "./routes/activeNow.js";
+import reportsRouter from "./routes/reports.js";
 
 dotenv.config();
 
@@ -171,6 +171,8 @@ app.use("/api/users", usersRoutes);
 app.use("/api/attendance/ltl", attendanceLtlRoutes);
 app.use("/api/stats-details", statsDetailsRoutes);
 app.use("/api/active-now", activeNowRouter);
+app.use("/api/reports", reportsRouter);
+
 app.use("/api/auth", authRoutes);
 
 app.get("/", (req, res) => {

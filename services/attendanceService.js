@@ -132,7 +132,7 @@ export async function getAttendanceLogs() {
 
   cleaningStaff?.forEach((staff) => {
     nameMap[staff.id] = staff.name || "Unknown";
-    projectMap[staff.id] = "CLEANING";
+    projectMap[staff.id] = "JANITOR";
     isCleaningStaff.add(staff.id);
   });
 
