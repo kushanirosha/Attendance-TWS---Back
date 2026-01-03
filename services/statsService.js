@@ -115,7 +115,7 @@ export const getDashboardStats = async () => {
     const absentStats = countGender(absentIds);
 
     // === Get rest day stats for current shift ===
-    const restDayStats = await getRestDayStatsForShift(currentShiftCode, today, excludedIds, maleIds, femaleIds);
+    const restDayStats = await getRestDayStatsForShift(currentShiftCode, today, maleIds, femaleIds);
 
     // === LATE COMERS: FIXED — Only count if scheduled + currently PRESENT + has Late/Half-day log ===
     const lateLogs = attendanceLogs.filter(log => {
