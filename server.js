@@ -16,6 +16,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import { getDashboardStats } from "./services/statsService.js";
 import { getAttendanceLogs } from "./services/attendanceService.js";
+import { getCheckoutLogs } from "./services/checkoutsService.js"; // ← NEW IMPORT
 import { getCurrentShiftAndDate } from "./utils/getCurrentShift.js";
 
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -31,6 +32,7 @@ import usersRoutes from "./routes/users.js";
 import statsDetailsRoutes from "./routes/statsDetailsRoutes.js";
 import activeNowRouter from "./routes/activeNow.js";
 import reportsRouter from "./routes/reports.js";
+import checkoutsRouter from "./routes/checkouts.js";
 
 dotenv.config();
 
@@ -53,8 +55,8 @@ const io = new Server(httpServer, {
     origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
     methods: ["GET", "POST"],
   },
-  pingInterval: 10000,    // Server pings client every 10s
-  pingTimeout: 5000,      // If no pong in 5s → disconnect
+  pingInterval: 10000,
+  pingTimeout: 5000,
   maxHttpBufferSize: 1e8,
 });
 
@@ -68,28 +70,38 @@ const supabase = createClient(
 const dashboardClients = new Set();
 let lastShift = null;
 
-// ───────────────────── MAIN BROADCAST FUNCTION ─────────────────────
+// ───────────────────── MAIN BROADCAST FUNCTION (NOW WITH CHECK-OUTS) ─────────────────────
 async function broadcastDashboard() {
   try {
-    const [stats, logs] = await Promise.all([
+    const [stats, checkInLogs, checkOutLogs] = await Promise.all([
       getDashboardStats(),
       getAttendanceLogs(),
+      getCheckoutLogs(), // ← Fetch latest check-outs
     ]);
+
+    // Combine both types of logs with event type
+    const combinedLogs = [
+      ...(checkInLogs || []).map(log => ({ ...log, event: "Check_In" })),
+      ...(checkOutLogs || []).map(log => ({ ...log, event: "Check_Out" }))
+    ];
+
+    // Sort by timestamp: newest first
+    combinedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     const payload = {
       stats,
-      logs: logs || [],
+      logs: combinedLogs,
       updatedAt: new Date().toISOString(),
     };
 
-    // Send to ALL connected dashboards
+    // Broadcast to all connected dashboard clients
     for (const client of dashboardClients) {
       if (client.connected) {
         client.emit("dashboard-update", payload);
       }
     }
 
-    console.log(`Live update sent → ${dashboardClients.size} client(s) | ${stats.currentShift} Shift`);
+    console.log(`Live update sent → ${dashboardClients.size} client(s) | ${stats.currentShift} Shift | ${combinedLogs.length} total activities`);
   } catch (err) {
     console.error("Broadcast failed:", err.message);
   }
@@ -100,10 +112,9 @@ io.on("connection", (socket) => {
   console.log("Dashboard connected:", socket.id);
   dashboardClients.add(socket);
 
-  // Send immediate update
+  // Send immediate update on connect
   broadcastDashboard();
 
-  // Optional: client can request manual refresh
   socket.on("request-update", () => {
     console.log("Manual update requested by client");
     broadcastDashboard();
@@ -127,9 +138,11 @@ setInterval(() => {
   lastShift = currentShift;
 }, 5000);
 
-// ───────────────────── SUPABASE REALTIME LISTENER ─────────────────────
+// ───────────────────── SUPABASE REALTIME LISTENERS ─────────────────────
+
+// Listen for new Check-Ins
 supabase
-  .channel("attendance-changes")
+  .channel("attendance-checkin-changes")
   .on(
     "postgres_changes",
     {
@@ -138,20 +151,35 @@ supabase
       table: "attendance_logs_check_in",
     },
     (payload) => {
-      console.log("New check-in → Live update triggered");
+      console.log("New CHECK-IN detected → Triggering live update");
       broadcastDashboard();
     }
   )
-  .subscribe((status, err) => {
-    console.log("Supabase Realtime:", status, err ? err : "");
-  });
+  .subscribe();
 
-// ───────────────────── HEARTBEAT: Keep connection alive (CRITICAL!) ─────────────────────
+// Listen for new Check-Outs
+supabase
+  .channel("attendance-checkout-changes")
+  .on(
+    "postgres_changes",
+    {
+      event: "INSERT",
+      schema: "public",
+      table: "attendance_logs_check_out",
+    },
+    (payload) => {
+      console.log("New CHECK-OUT detected → Triggering live update");
+      broadcastDashboard();
+    }
+  )
+  .subscribe();
+
+// ───────────────────── HEARTBEAT: Keep connection alive forever ─────────────────────
 setInterval(() => {
-  broadcastDashboard(); // This runs every 30 seconds → keeps socket alive forever
+  broadcastDashboard(); // Every 30 seconds → prevents disconnects
 }, 30000);
 
-// Initial broadcast after 3s
+// Initial broadcast after server starts
 setTimeout(broadcastDashboard, 3000);
 
 // ───────────────────── MIDDLEWARES & ROUTES ─────────────────────
@@ -172,6 +200,7 @@ app.use("/api/attendance/ltl", attendanceLtlRoutes);
 app.use("/api/stats-details", statsDetailsRoutes);
 app.use("/api/active-now", activeNowRouter);
 app.use("/api/reports", reportsRouter);
+app.use("/api/checkouts", checkoutsRouter); // ← Your REST endpoint still works
 
 app.use("/api/auth", authRoutes);
 
@@ -183,6 +212,6 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`\n SERVER RUNNING ON http://localhost:${PORT}`);
-  console.log(` REAL-TIME DASHBOARD IS NOW 24/7 STABLE ON LOCALHOST`);
-  console.log(` Open your frontend and leave it running → It will NEVER die!\n`);
+  console.log(` REAL-TIME DASHBOARD NOW SHOWS CHECK-INS + CHECK-OUTS LIVE`);
+  console.log(` Open frontend → You will see mixed activities in real time!\n`);
 });
