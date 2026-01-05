@@ -1,21 +1,78 @@
 import { supabase } from "../config/db.js";
 
-// MAIN STATUS DECIDER FOR CHECK-OUTS
-const getStatus = (timestamp, empId, checkInTimestamp) => {
-  const project = (projectMap[empId] || "").toUpperCase();
-  if (["STL", "ADMIN", "ER", "CLEANING", "JANITOR"].includes(project) || isSpecialExempt.has(empId)) return "N/A";
+// MAIN STATUS DECIDER FOR CHECK-OUTS (UPDATED LOGIC)
+const getStatus = (checkoutTimestamp, empId) => {
+  const project = (projectMap[empId] || "").toUpperCase().trim();
+  
+  // N/A for special projects or exempt employees
+  if (
+    ["STL", "ADMIN", "ER", "CLEANING", "JANITOR"].includes(project) ||
+    isSpecialExempt.has(empId)
+  ) {
+    return "N/A";
+  }
 
-  if (!checkInTimestamp) return "Half Day";
+  const shift = todayShiftMap[empId];
 
-  const durationHours = (new Date(timestamp) - new Date(checkInTimestamp)) / (1000 * 60 * 60);
-  return durationHours > 8 ? "Complete" : "Half Day";
+  // If no shift assigned today (OFF, RD, W5, HOB, or not in map) → Complete
+  if (!shift || !["A", "B", "C"].includes(shift)) {
+    return "Complete";
+  }
+
+  // Convert checkout timestamp to Colombo time for accurate hour/minute check
+  const checkoutDate = new Date(checkoutTimestamp);
+  const colomboTime = new Date(checkoutDate.toLocaleString("en-US", { timeZone: "Asia/Colombo" }));
+  const hour = colomboTime.getHours();
+  const minute = colomboTime.getMinutes();
+
+  if (shift === "A") {
+    // A Shift: Expected checkout around 1:00 PM - 1:30 PM
+    if (hour === 13 && minute >= 0 && minute < 30) {
+      return "Incomplete"; // 1:00 PM to 1:29 PM
+    } else if (hour === 13 && minute >= 30) {
+      return "Complete"; // 1:30 PM or later
+    } else if (hour < 13 || (hour === 13 && minute === 0)) {
+      return "Half Day"; // Before 1:00 PM
+    } else {
+      return "Complete"; // After 1:30 PM
+    }
+  }
+
+  if (shift === "B") {
+    // B Shift: Expected checkout around 9:00 PM - 9:30 PM
+    if (hour === 21 && minute >= 0 && minute < 30) {
+      return "Incomplete"; // 9:00 PM to 9:29 PM
+    } else if (hour === 21 && minute >= 30) {
+      return "Complete"; // 9:30 PM or later
+    } else if (hour < 21) {
+      return "Half Day"; // Before 9:00 PM
+    } else {
+      return "Complete"; // After 9:30 PM (next day possible, but treated as complete)
+    }
+  }
+
+  if (shift === "C") {
+    // C Shift: Expected checkout around 5:00 AM - 5:30 AM (next day)
+    if (hour === 5 && minute >= 0 && minute < 30) {
+      return "Incomplete"; // 5:00 AM to 5:29 AM
+    } else if (hour === 5 && minute >= 30) {
+      return "Complete"; // 5:30 AM or later
+    } else if (hour < 5) {
+      return "Half Day"; // Before 5:00 AM
+    } else {
+      return "Complete"; // After 5:30 AM
+    }
+  }
+
+  // Fallback (should not reach here)
+  return "Complete";
 };
 
-// Global variables (will be populated inside function)
+// Global variables
 let isCleaningStaff, isSpecialExempt, nameMap, projectMap, todayShiftMap;
 
 export async function getCheckoutLogs() {
-  // BULLETPROOF DATE — ALWAYS USE SRI LANKA TIME
+  // BULLETPROOF DATE — SRI LANKA TIME
   const colomboNow = new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" });
   const today = new Date(colomboNow);
 
@@ -24,12 +81,11 @@ export async function getCheckoutLogs() {
   const dayOfMonth = today.getDate();
   const monthYear = `${year}-${month}`;
 
-  // Calculate UTC ranges for today and yesterday (to handle overnight shifts)
-  const colomboOffset = 5.5 * 60 * 60 * 1000; // 5:30 hours in ms
+  // UTC range for today in Colombo time
+  const colomboOffset = 5.5 * 60 * 60 * 1000;
   const todayStartColombo = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const todayStartUTC = new Date(todayStartColombo.getTime() - colomboOffset);
   const todayEndUTC = new Date(todayStartUTC.getTime() + 24 * 60 * 60 * 1000);
-  const yesterdayStartUTC = new Date(todayStartUTC.getTime() - 24 * 60 * 60 * 1000);
 
   // Fetch today's check-out logs
   const { data: logs, error: logError } = await supabase
@@ -42,7 +98,7 @@ export async function getCheckoutLogs() {
   if (logError) throw new Error(logError.message);
   if (!logs || logs.length === 0) return [];
 
-  // 1. Load today's shift assignments (kept for consistency, though not used in status)
+  // Load today's shift assignments
   const { data: shiftRows } = await supabase
     .from("shift_assignments")
     .select("assignments")
@@ -54,17 +110,17 @@ export async function getCheckoutLogs() {
     const assignments = row.assignments || {};
     Object.entries(assignments).forEach(([empId, dates]) => {
       const shift = dates?.[dayOfMonth.toString()];
-      if (shift === "A" || shift === "B" || shift === "C") {
+      if (["A", "B", "C"].includes(shift)) {
         todayShiftMap[empId] = shift;
       }
-      // "RD", "OFF", "W5", "HOB" → ignored = no shift
+      // Others (RD, OFF, etc.) intentionally not added → treated as no shift
     });
   });
 
-  // 2. Get unique employee IDs
+  // Get unique employee IDs from checkouts
   const employeeIds = [...new Set(logs.map((l) => l.employee_id))];
 
-  // 3. Fetch employee details
+  // Fetch employee details
   const [{ data: regularEmployees }, { data: cleaningStaff }] = await Promise.all([
     supabase.from("employees").select("id, name, project").in("id", employeeIds),
     supabase.from("cleaning_staff").select("id, name, project").in("id", employeeIds),
@@ -74,7 +130,7 @@ export async function getCheckoutLogs() {
   nameMap = {};
   projectMap = {};
   isCleaningStaff = new Set();
-  isSpecialExempt = new Set(["1007"]); // Add more exempt IDs here
+  isSpecialExempt = new Set(["1007"]); // Add exempt IDs here
 
   regularEmployees?.forEach((emp) => {
     nameMap[emp.id] = emp.name || "Unknown";
@@ -87,55 +143,24 @@ export async function getCheckoutLogs() {
     isCleaningStaff.add(staff.id);
   });
 
-  // 4. Get latest check-out per employee
+  // Get latest check-out per employee
   const latestCheckOut = {};
   for (const log of logs) {
     const current = latestCheckOut[log.employee_id];
     if (!current || new Date(log.timestamp) > new Date(current.timestamp)) {
       latestCheckOut[log.employee_id] = log;
     }
-  }
-
-  // 5. Fetch recent check-in logs (from yesterday onwards to handle overnight)
-  const { data: checkInLogs, error: ciError } = await supabase
-    .from("attendance_logs_check_in")
-    .select("employee_id, timestamp")
-    .gte("timestamp", yesterdayStartUTC.toISOString())
-    .order("timestamp", { ascending: false });
-
-  if (ciError) throw new Error(ciError.message);
-
-  // Group check-ins by employee (lists are ordered desc)
-  const empCheckIns = {};
-  checkInLogs.forEach((log) => {
-    if (!empCheckIns[log.employee_id]) empCheckIns[log.employee_id] = [];
-    empCheckIns[log.employee_id].push(log.timestamp);
-  });
-
-  // === HIDE SENSITIVE PROJECT NAMES (e.g., ADMIN → ER) ===
-  const HIDDEN_PROJECT_EMPLOYEES = new Set(["1001", "1283"]); // Add more IDs if needed
-  const projectDisplayOverride = (empId, originalProject) => {
-    if (HIDDEN_PROJECT_EMPLOYEES.has(empId)) {
-      return "ER"; // Always show "ER" for these IDs, no matter what project they have
-    }
-    return originalProject;
   };
 
-  // 6. Final Output — With check-out specific status + event field
+  // === HIDE SENSITIVE PROJECT NAMES ===
+  const HIDDEN_PROJECT_EMPLOYEES = new Set(["1001", "1283"]);
+  const projectDisplayOverride = (empId, originalProject) => {
+    return HIDDEN_PROJECT_EMPLOYEES.has(empId) ? "ER" : originalProject;
+  };
+
+  // Final Output
   return Object.values(latestCheckOut).map((log) => {
     const empId = log.employee_id;
-    const checkOutTs = log.timestamp;
-    let checkInTs = null;
-
-    // Find the latest check-in before this check-out (lists are desc ordered)
-    const checkInList = empCheckIns[empId] || [];
-    for (const ts of checkInList) {
-      if (new Date(ts) < new Date(checkOutTs)) {
-        checkInTs = ts;
-        break;
-      }
-    }
-
     const originalProject = projectMap[empId] || "UNKNOWN";
     const displayProject = projectDisplayOverride(empId, originalProject);
 
@@ -150,7 +175,7 @@ export async function getCheckoutLogs() {
         hour12: true,
       }),
       timestamp: log.timestamp,
-      status: getStatus(log.timestamp, empId, checkInTs),
+      status: getStatus(log.timestamp, empId), // Updated logic
       event: "Check_Out",
     };
   });
