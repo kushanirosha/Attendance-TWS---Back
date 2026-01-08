@@ -1,10 +1,10 @@
 // services/reportService.js
 import { supabase } from "../config/db.js";
 import {
-  getColomboMinutes,
   getAttendanceStatus,
   fetchProjectMap,
 } from "../utils/attendanceStatus.js";
+import { getCheckoutStatus } from "../utils/checkoutStatus.js";
 
 /**
  * Convert UTC ISO timestamp to Colombo local time "HH:MM"
@@ -29,7 +29,7 @@ function getColomboDate(utcIsoString) {
 }
 
 /**
- * Calculate working hours — handles overnight
+ * Calculate working hours — handles overnight shifts
  */
 function calculateWorkingHours(inIso, outIso) {
   if (!inIso || !outIso) return "-";
@@ -47,6 +47,8 @@ const shiftDisplayMap = {
   RD: "Rest Day",
 };
 
+const specialExemptIds = new Set(["1007"]);
+
 export const getAttendanceReports = async (employeeIds, year, month) => {
   if (!employeeIds || employeeIds.length === 0) {
     throw new Error("At least one employee ID is required");
@@ -56,7 +58,6 @@ export const getAttendanceReports = async (employeeIds, year, month) => {
   const monthYear = `${year}-${monthPadded}`;
   const daysInMonth = new Date(year, month, 0).getDate();
 
-  // Current date in Colombo time
   const nowInColombo = new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" });
   const today = new Date(nowInColombo);
   const currentYear = today.getFullYear();
@@ -89,7 +90,7 @@ export const getAttendanceReports = async (employeeIds, year, month) => {
       if (ass) Object.assign(allAssignments, ass);
     }
 
-    // 2. Employee data: gender + project
+    // 2. Employee data
     const [genderRes, projectMap] = await Promise.all([
       supabase.from("employees").select("id, gender").in("id", employeeIds),
       fetchProjectMap(employeeIds),
@@ -117,7 +118,7 @@ export const getAttendanceReports = async (employeeIds, year, month) => {
     const checkIns = inRes.data || [];
     const checkOuts = outRes.data || [];
 
-    // 4. Group by Colombo calendar date
+    // 4. Group logs by Colombo date
     const dailyAttendance = {};
     employeeIds.forEach((id) => (dailyAttendance[id] = {}));
 
@@ -126,23 +127,70 @@ export const getAttendanceReports = async (employeeIds, year, month) => {
       const dateKey = getColomboDate(log.timestamp);
 
       if (!dailyAttendance[empId][dateKey]) {
-        dailyAttendance[empId][dateKey] = { in: null, out: null };
+        dailyAttendance[empId][dateKey] = { in: null, out: null, inTime: "-", outTime: "-" };
       }
 
       const ts = new Date(log.timestamp).getTime();
       const key = type === "in" ? "in" : "out";
+      const timeKey = type === "in" ? "inTime" : "outTime";
       const existing = dailyAttendance[empId][dateKey][key]
         ? new Date(dailyAttendance[empId][dateKey][key]).getTime()
         : 0;
 
       if (ts > existing) {
         dailyAttendance[empId][dateKey][key] = log.timestamp;
-        dailyAttendance[empId][dateKey][`${key}Time`] = toColomboTime(log.timestamp);
+        dailyAttendance[empId][dateKey][timeKey] = toColomboTime(log.timestamp);
       }
     };
 
     checkIns.forEach((log) => processLog(log, "in"));
     checkOuts.forEach((log) => processLog(log, "out"));
+
+    // === FINAL LOGIC: Move check-out backward to previous Night shift day ===
+    for (const empId of employeeIds) {
+      const assignments = allAssignments[empId] || {};
+
+      let changed = true;
+      while (changed) {
+        changed = false;
+
+        // Loop from last day to first to ensure full chaining
+        for (let day = daysInMonth; day >= 1; day--) {
+          const dayPadded = String(day).padStart(2, "0");
+          const targetDate = `${year}-${monthPadded}-${dayPadded}`;
+
+          const shiftRaw = (assignments[dayPadded] || assignments[day.toString()] || "")
+            .toString()
+            .trim()
+            .toUpperCase();
+
+          if (shiftRaw !== "C") continue; // Only for Night shift
+
+          const dayData = dailyAttendance[empId][targetDate];
+          if (!dayData) continue;
+
+          if (dayData.out) continue; // Already has check-out
+
+          // Look at next day
+          const nextDay = new Date(targetDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          const nextDayStr = nextDay.toISOString().split("T")[0];
+          const nextDayData = dailyAttendance[empId][nextDayStr];
+
+          if (nextDayData && nextDayData.out) {
+            // Move check-out from next day to this day
+            dayData.out = nextDayData.out;
+            dayData.outTime = nextDayData.outTime;
+
+            // Remove from next day
+            delete nextDayData.out;
+            delete nextDayData.outTime;
+
+            changed = true;
+          }
+        }
+      }
+    }
 
     // 5. Build reports
     const monthNames = [
@@ -170,73 +218,65 @@ export const getAttendanceReports = async (employeeIds, year, month) => {
 
         const displayShift = shiftDisplayMap[shiftRaw] || (shiftRaw === "RD" ? "Rest Day" : "-");
 
-        // Determine if this day is in the future
         const isFutureDay =
           year > currentYear ||
           (year === currentYear && month > currentMonth) ||
           (year === currentYear && month === currentMonth && day > currentDay);
 
-        let dayData = dailyAttendance[empId][targetDate] || {};
-
-        // Pull early morning from next day for Night/Noon shifts
-        if ((shiftRaw === "C" || shiftRaw === "B") && !dayData.in) {
-          const next = new Date(targetDate);
-          next.setDate(next.getDate() + 1);
-          const nextStr = next.toISOString().split("T")[0];
-          const nextData = dailyAttendance[empId][nextStr] || {};
-          if (nextData.in && getColomboMinutes(nextData.in) < 450) {
-            dayData = { ...nextData };
-          }
-        }
-
-        const inIso = dayData.in;
-        const outIso = dayData.out;
+        const dayData = dailyAttendance[empId][targetDate] || {};
+        const inIso = dayData.in || null;
+        const outIso = dayData.out || null;
         const checkIn = dayData.inTime || "-";
         const checkOut = dayData.outTime || "-";
         const workingHours = calculateWorkingHours(inIso, outIso);
 
-        let status = "-";
+        let checkInStatus = "-";
+        let checkOutStatus = "-";
         let remark = "-";
 
-        // Future days: show shift but empty everything else
         if (isFutureDay) {
           attendance[dayStr] = {
             shift: displayShift,
             checkIn: "-",
             checkOut: "-",
-            status: "-",
+            checkInStatus: "-",
+            checkOutStatus: "-",
             remark: "-",
             working: "-",
           };
-          continue; // skip all other logic
+          continue;
         }
 
-        // Past or current day logic
         if (shiftRaw === "RD") {
           rd++;
           if (checkIn !== "-" || checkOut !== "-") {
-            remark = "Punched on RD";
+            remark = "Punched on Rest Day";
           }
         } else if (["A", "B", "C"].includes(shiftRaw)) {
           assigned++;
 
           if (!inIso && !outIso) {
-            status = "-";
             remark = "Absent";
             absent++;
           } else if (inIso && outIso) {
+            checkInStatus = getAttendanceStatus(inIso, empProject, shiftRaw);
+            checkOutStatus = getCheckoutStatus(outIso, shiftRaw, empProject, empId, specialExemptIds);
+            if (checkInStatus === "Late") late++;
+            if (["On time", "Late", "Half day"].includes(checkInStatus)) working++;
             remark = "Completed";
-            status = getAttendanceStatus(inIso, empProject, shiftRaw);
-            if (status === "Late") late++;
-            if (["On time", "Late", "Half day"].includes(status)) working++;
           } else if (inIso && !outIso) {
-            remark = "Active but Not check out";
-            status = getAttendanceStatus(inIso, empProject, shiftRaw);
-            if (status === "Late") late++;
-            if (["On time", "Late", "Half day"].includes(status)) working++;
+            checkInStatus = getAttendanceStatus(inIso, empProject, shiftRaw);
+            checkOutStatus = "No Checkout";
+            if (checkInStatus === "Late") late++;
+            if (["On time", "Late", "Half day"].includes(checkInStatus)) working++;
+            remark = "Active (No Checkout)";
           } else if (!inIso && outIso) {
-            remark = "Incomplete";
-            status = "-";
+            checkOutStatus = getCheckoutStatus(outIso, shiftRaw, empProject, empId, specialExemptIds);
+            remark = "Only Checkout (Invalid)";
+          }
+        } else {
+          if (inIso || outIso) {
+            remark = "Punched on Off Day";
           }
         }
 
@@ -244,7 +284,8 @@ export const getAttendanceReports = async (employeeIds, year, month) => {
           shift: displayShift,
           checkIn,
           checkOut,
-          status,
+          checkInStatus,
+          checkOutStatus,
           remark,
           working: workingHours,
         };
