@@ -16,7 +16,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import { getDashboardStats } from "./services/statsService.js";
 import { getAttendanceLogs } from "./services/attendanceService.js";
-import { getCheckoutLogs } from "./services/checkoutsService.js"; // ← NEW IMPORT
+import { getCheckoutLogs } from "./services/checkoutsService.js";
 import { getCurrentShiftAndDate } from "./utils/getCurrentShift.js";
 
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -24,7 +24,7 @@ import attendanceRoutes from "./routes/attendanceRoutes.js";
 import projectRoutes from "./routes/projectRoutes.js";
 import shiftAssignmentsRoutes from "./routes/shiftAssignmentsRoutes.js";
 import statsRoutes from "./routes/statsRoutes.js";
-import attendanceStlRoutes from "./routes/attendanceStlRoutes.js";
+import attendancePtsRoutes from "./routes/attendancePtsRoutes.js";
 import attendanceAdminRoutes from "./routes/attendanceAdminRoutes.js";
 import attendanceLtlRoutes from "./routes/attendanceLtlRoutes.js";
 import authRoutes from "./routes/auth.js";
@@ -193,7 +193,7 @@ app.use("/api/attendance", attendanceRoutes);
 app.use("/api", projectRoutes);
 app.use("/api/shiftAssignments", shiftAssignmentsRoutes);
 app.use("/api/stats", statsRoutes);
-app.use("/api/attendancestl", attendanceStlRoutes);
+app.use("/api/attendancepts", attendancePtsRoutes);
 app.use("/api/attendanceadmin", attendanceAdminRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/attendance/ltl", attendanceLtlRoutes);

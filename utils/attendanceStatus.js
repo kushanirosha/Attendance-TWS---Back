@@ -50,7 +50,7 @@ export const getAttendanceStatus = (timestamp, project, assignedShift) => {
   if (!timestamp) return "-";
 
   // Exempt projects/roles → N/A
-  const exemptProjects = new Set(["CLEANING", "ADMIN", "STL", "TTL", "ASS. TL", "TL"]);
+  const exemptProjects = new Set(["CLEANING", "ADMIN", "PTS", "TTL", "ASS. TL", "TL"]);
   if (exemptProjects.has((project || "").toString().trim().toUpperCase())) {
     return "N/A";
   }

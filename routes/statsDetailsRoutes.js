@@ -16,7 +16,7 @@ router.get("/", async (req, res) => {
     // Initialize activeNow gender breakdown (all start at 0)
     const activeNowCounts = {
       LTL:   { total: 0, male: 0, female: 0 },
-      STL:   { total: 0, male: 0, female: 0 },
+      PTS:   { total: 0, male: 0, female: 0 },
       IT:    { total: 0, male: 0, female: 0 },
       ADMIN: { total: 0, male: 0, female: 0 }
     };
@@ -91,16 +91,16 @@ router.get("/", async (req, res) => {
       if (gender === "Female") activeByProject[proj].female++;
       activeByProject[proj].employees.push({ id, name });
 
-      // === Build activeNowCounts (LTL, STL, IT, ADMIN) ===
+      // === Build activeNowCounts (LTL, PTS, IT, ADMIN) ===
       if (["ASS. TL", "TL", "TTL"].includes(proj)) {
         activeNowCounts.LTL.total++;
         if (gender === "Male") activeNowCounts.LTL.male++;
         if (gender === "Female") activeNowCounts.LTL.female++;
       }
-      else if (proj === "STL") {
-        activeNowCounts.STL.total++;
-        if (gender === "Male") activeNowCounts.STL.male++;
-        if (gender === "Female") activeNowCounts.STL.female++;
+      else if (proj === "PTS") {
+        activeNowCounts.PTS.total++;
+        if (gender === "Male") activeNowCounts.PTS.male++;
+        if (gender === "Female") activeNowCounts.PTS.female++;
       }
       else if (proj === "IT") {
         activeNowCounts.IT.total++;

@@ -46,9 +46,9 @@ const getDualWindowStatus = (minutes, assignedShift) => {
 
 // MAIN STATUS DECIDER — FINAL VERSION (Assigned shift first!)
 const getStatus = (timestamp, empId, assignedShift) => {
-  // Exempt: Cleaning, Special IDs, Admin, STL
+  // Exempt: Cleaning, Special IDs, Admin, PTS
   if (isCleaningStaff.has(empId) || isSpecialExempt.has(empId)) return "N/A";
-  if (["ADMIN", "STL"].includes(projectMap[empId] || "")) return "N/A";
+  if (["ADMIN", "PTS"].includes(projectMap[empId] || "")) return "N/A";
 
   const minutes = getColomboMinutes(timestamp);
 

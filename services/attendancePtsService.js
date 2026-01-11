@@ -1,8 +1,8 @@
-// services/attendanceStlService.js
+// services/attendancePtsService.js
 import { supabase } from "../config/db.js";
 import moment from 'moment-timezone';
 
-export async function getStlActiveNowCount(tz = 'Asia/Colombo') {
+export async function getPtsActiveNowCount(tz = 'Asia/Colombo') {
   try {
     // ---------------------------------------------------------------
     // 1. Get project PROJ011
@@ -47,7 +47,7 @@ export async function getStlActiveNowCount(tz = 'Asia/Colombo') {
       return { total: 0, male: 0, female: 0 };
     }
 
-    console.log('STL Employees:', employeeIds);
+    console.log('PTS Employees:', employeeIds);
 
     // ---------------------------------------------------------------
     // 3. 48-hour window (UTC)
@@ -74,7 +74,7 @@ export async function getStlActiveNowCount(tz = 'Asia/Colombo') {
         .gte('timestamp', windowStart)
         .lte('timestamp', windowEnd),
 
-      // Fetch gender for all STL employees
+      // Fetch gender for all PTS employees
       supabase
         .from('employees')
         .select('id, gender')
@@ -128,12 +128,12 @@ export async function getStlActiveNowCount(tz = 'Asia/Colombo') {
       }
     }
 
-    console.log('STL Active:', { total: activeCount, male: maleCount, female: femaleCount });
+    console.log('PTS Active:', { total: activeCount, male: maleCount, female: femaleCount });
     console.log('Active Employee IDs:', activeEmployeeIds);
     return { total: activeCount, male: maleCount, female: femaleCount };
 
   } catch (err) {
-    console.error('STL active-now error:', err);
+    console.error('PTS active-now error:', err);
     return { total: 0, male: 0, female: 0 };
   }
 }

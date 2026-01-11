@@ -21,7 +21,7 @@ export function getCheckoutStatus(
   const trimmedProject = (project || "").toUpperCase().trim();
 
   // Special projects or exempt employees → N/A
-  const specialProjects = ["STL", "ADMIN", "ER", "CLEANING", "JANITOR"];
+  const specialProjects = ["PTS", "ADMIN", "ER", "CLEANING", "JANITOR"];
   if (specialProjects.includes(trimmedProject) || specialExemptIds.has(empId)) {
     return "N/A";
   }

@@ -6,7 +6,7 @@ const getStatus = (checkoutTimestamp, empId) => {
   
   // N/A for special projects or exempt employees
   if (
-    ["STL", "ADMIN", "ER", "CLEANING", "JANITOR"].includes(project) ||
+    ["PTS", "ADMIN", "ER", "CLEANING", "JANITOR"].includes(project) ||
     isSpecialExempt.has(empId)
   ) {
     return "N/A";
