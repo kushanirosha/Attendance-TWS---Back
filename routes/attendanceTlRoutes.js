@@ -1,21 +1,21 @@
-// routes/attendanceLtlRoutes.js
+// routes/attendanceTlRoutes.js
 import express from "express";
-import { getLtlActiveNowCount } from "../services/attendanceLtlService.js";
+import { getTlActiveNowCount } from "../services/attendanceTlService.js";
 
 const router = express.Router();
 
 // ROOT ENDPOINT — this will fix your 404
 router.get("/", async (req, res) => {
   try {
-    const result = await getLtlActiveNowCount();
+    const result = await getTlActiveNowCount();
 
     res.json({
       success: true,
-      message: "LTL (ASS.TL / TL / TTL) Attendance API",
+      message: "TL (ASS.TL / TL / TTL) Attendance API",
       endpoints: {
-        activeNow: "/api/attendance/ltl/active-now",
-        test: "/api/attendance/ltl/test",
-        thisPage: "/api/attendance/ltl"
+        activeNow: "/api/attendance/tl/active-now",
+        test: "/api/attendance/tl/test",
+        thisPage: "/api/attendance/tl"
       },
       currentActive: {
         total: result.total,
@@ -28,7 +28,7 @@ router.get("/", async (req, res) => {
   } catch (err) {
     res.status(500).json({
       success: false,
-      message: "LTL service temporarily unavailable",
+      message: "TL service temporarily unavailable",
       error: err.message
     });
   }
@@ -37,24 +37,24 @@ router.get("/", async (req, res) => {
 // Existing routes
 router.get("/active-now", async (req, res) => {
   try {
-    const result = await getLtlActiveNowCount();
+    const result = await getTlActiveNowCount();
     res.status(200).json({
       success: true,
       data: {
         total: result.total,
         male: result.male,
         female: result.female,
-        label: "LTL (Leadership Team)",
+        label: "TL (Leadership Team)",
         updatedAt: new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }),
       },
-      message: "LTL active count fetched successfully",
+      message: "TL active count fetched successfully",
     });
   } catch (error) {
-    console.error("LTL Active Now API Error:", error.message);
+    console.error("TL Active Now API Error:", error.message);
     res.status(500).json({
       success: false,
       data: { total: 0, male: 0, female: 0 },
-      message: "Failed to fetch LTL active count",
+      message: "Failed to fetch TL active count",
     });
   }
 });
@@ -62,7 +62,7 @@ router.get("/active-now", async (req, res) => {
 router.get("/test", (req, res) => {
   res.json({
     success: true,
-    message: "LTL Attendance API is working!",
+    message: "TL Attendance API is working!",
     time: new Date().toLocaleString("en-US", { timeZone: "Asia/Colombo" }),
   });
 });

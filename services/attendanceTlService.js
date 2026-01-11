@@ -1,15 +1,15 @@
-// services/attendanceLtlService.js
+// services/attendanceTlService.js
 import { supabase } from "../config/db.js";
 
-export const getLtlActiveNowCount = async () => {
+export const getTlActiveNowCount = async () => {
   try {
-    const LTL_PROJECTS = ["TTL", "ASS. TL", "TL"];
+    const TL_PROJECTS = ["TTL", "ASS. TL", "TL"];
 
-    // 1. Get all active LTL employees
+    // 1. Get all active TL employees
     const { data: employees } = await supabase
       .from("employees")
       .select("id, name, gender")
-      .in("project", LTL_PROJECTS)
+      .in("project", TL_PROJECTS)
       .eq("status", "Active");
 
     if (!employees || employees.length === 0) {
@@ -113,7 +113,7 @@ export const getLtlActiveNowCount = async () => {
       }
     }
 
-    console.log(`LTL Active Now → ${total} employees:`, activeEmployeeIds);
+    console.log(`TL Active Now → ${total} employees:`, activeEmployeeIds);
     return {
       total,
       male,
@@ -123,7 +123,7 @@ export const getLtlActiveNowCount = async () => {
     };
 
   } catch (err) {
-    console.error("getLtlActiveNowCount error:", err.message);
+    console.error("getTlActiveNowCount error:", err.message);
     return { total: 0, male: 0, female: 0, activeEmployeeIds: [], activeEmployees: [] };
   }
 };
