@@ -33,6 +33,7 @@ import statsDetailsRoutes from "./routes/statsDetailsRoutes.js";
 import activeNowRouter from "./routes/activeNow.js";
 import reportsRouter from "./routes/reports.js";
 import checkoutsRouter from "./routes/checkouts.js";
+import othersRouter from "./routes/others.js"
 
 dotenv.config();
 
@@ -200,7 +201,8 @@ app.use("/api/attendance/tl", attendanceTlRoutes);
 app.use("/api/stats-details", statsDetailsRoutes);
 app.use("/api/active-now", activeNowRouter);
 app.use("/api/reports", reportsRouter);
-app.use("/api/checkouts", checkoutsRouter); // ← Your REST endpoint still works
+app.use("/api/checkouts", checkoutsRouter);
+app.use('/api/others', othersRouter);
 
 app.use("/api/auth", authRoutes);
 
